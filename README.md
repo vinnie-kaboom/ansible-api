@@ -10,6 +10,7 @@ A simple API service that helps you run Ansible playbooks remotely. This service
 - Comprehensive logging and monitoring dashboard
 - Secure execution environment
 - Clean and simple API interface
+- GitHub Actions integration for automated deployments
 
 ## Quick Start
 
@@ -121,6 +122,130 @@ curl -X POST http://localhost:8080/run-playbook \
 - Open `http://localhost:5000` in your browser
 - View statistics and logs for all repositories
 - Monitor playbook execution status
+
+## GitHub Actions Integration
+
+### 1. Repository Setup
+
+1. Create a `.github/workflows/ansible-deploy.yml` file in your playbook repository:
+
+```yaml
+name: Ansible Deployment
+
+on:
+  push:
+    branches: [ main ]
+  workflow_dispatch:
+    inputs:
+      environment:
+        description: 'Deployment environment'
+        required: true
+        default: 'staging'
+        type: choice
+        options:
+          - staging
+          - production
+
+jobs:
+  deploy:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout playbooks
+        uses: actions/checkout@v3
+
+      - name: Deploy to staging
+        if: github.event.inputs.environment == 'staging' || github.event_name == 'push'
+        run: |
+          curl -X POST ${{ secrets.STAGING_API_URL }}/run-playbook \
+            -H "Content-Type: application/json" \
+            -H "Authorization: Bearer ${{ secrets.API_TOKEN }}" \
+            -d '{
+              "playbook": "run_playbook",
+              "inventory": "staging",
+              "extra_vars": {
+                "repo_url": "${{ github.server_url }}/${{ github.repository }}.git",
+                "repo_name": "staging-playbooks",
+                "playbook_name": "site",
+                "branch": "${{ github.ref_name }}",
+                "rollback": true
+              }
+            }'
+
+      - name: Deploy to production
+        if: github.event.inputs.environment == 'production'
+        run: |
+          curl -X POST ${{ secrets.PROD_API_URL }}/run-playbook \
+            -H "Content-Type: application/json" \
+            -H "Authorization: Bearer ${{ secrets.API_TOKEN }}" \
+            -d '{
+              "playbook": "run_playbook",
+              "inventory": "production",
+              "extra_vars": {
+                "repo_url": "${{ github.server_url }}/${{ github.repository }}.git",
+                "repo_name": "prod-playbooks",
+                "playbook_name": "site",
+                "branch": "${{ github.ref_name }}",
+                "rollback": true
+              }
+            }'
+```
+
+2. Add repository secrets in GitHub:
+   - Go to your repository settings
+   - Navigate to Secrets and Variables > Actions
+   - Add the following secrets:
+     - `STAGING_API_URL`: Your staging server API URL
+     - `PROD_API_URL`: Your production server API URL
+     - `API_TOKEN`: Your API authentication token (if implemented)
+
+### 2. Manual Deployment
+
+1. Go to your repository on GitHub
+2. Click on the "Actions" tab
+3. Select the "Ansible Deployment" workflow
+4. Click "Run workflow"
+5. Select the environment (staging/production)
+6. Click "Run workflow"
+
+### 3. Automatic Deployment
+
+The workflow will automatically trigger when:
+- Code is pushed to the main branch (deploys to staging)
+- A new release is created (deploys to production)
+- Manually triggered through the GitHub Actions interface
+
+### 4. Monitoring Deployments
+
+1. Check deployment status in GitHub Actions:
+   - Go to the "Actions" tab
+   - Click on the latest workflow run
+   - View the execution logs
+
+2. Monitor through the dashboard:
+   - Open `http://your-server:5000`
+   - Look for the repository-specific logs
+   - Check execution status and details
+
+### 5. Rollback
+
+If a deployment fails:
+1. The system will automatically attempt to rollback
+2. Check the logs in the dashboard for rollback status
+3. If automatic rollback fails, you can manually trigger a rollback:
+   ```bash
+   curl -X POST http://your-server:8080/run-playbook \
+     -H "Content-Type: application/json" \
+     -d '{
+       "playbook": "run_playbook",
+       "inventory": "production",
+       "extra_vars": {
+         "repo_url": "https://github.com/user/repo.git",
+         "repo_name": "prod-playbooks",
+         "playbook_name": "rollback",
+         "branch": "main"
+       }
+     }'
+   ```
 
 ## Testing
 
