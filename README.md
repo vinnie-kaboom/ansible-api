@@ -1,6 +1,15 @@
 # Ansible API
 
-A simple API service that helps you run Ansible playbooks remotely. This service allows you to execute playbooks stored in a Git repository through HTTP endpoints.
+A simple API service that helps you run Ansible playbooks remotely. This service allows you to execute playbooks stored in Git repositories through HTTP endpoints, with features like repository management, logging, and monitoring.
+
+## Features
+
+- Execute Ansible playbooks from Git repositories
+- Repository management (add, remove, list repositories)
+- Automatic backup and rollback capabilities
+- Comprehensive logging and monitoring dashboard
+- Secure execution environment
+- Clean and simple API interface
 
 ## Quick Start
 
@@ -8,8 +17,9 @@ A simple API service that helps you run Ansible playbooks remotely. This service
 
 - Go 1.16 or later
 - Ansible installed on the server
-- Git repository with your Ansible playbooks
-- Basic understanding of Ansible playbooks
+- Python 3.x (for dashboard)
+- Git
+- jq (for repository management)
 
 ### 2. Installation
 
@@ -20,75 +30,139 @@ cd ansible-api
 
 # Build the application
 go build -o ansible-api cmd/api/main.go
+
+# Install Python dependencies
+pip3 install flask
+
+# Create required directories
+sudo mkdir -p /etc/ansible/playbooks/{logs,scripts,templates}
+sudo chown -R $USER:$USER /etc/ansible/playbooks
 ```
 
 ### 3. Configuration
 
-Create a `.env` file in the project root:
-
+1. Create a `.env` file in the project root:
 ```env
+# Where to store Ansible playbooks on your server
 ANSIBLE_PLAYBOOK_PATH=/etc/ansible/playbooks
-ANSIBLE_REPO_URL=https://github.com/your-org/your-playbooks.git
+
+# Port number for the API
 PORT=8080
 ```
 
-### 4. Running the Service
-
+2. Copy the dashboard template:
 ```bash
-# Start the service
+cp templates/dashboard.html /etc/ansible/playbooks/templates/
+```
+
+3. Create an initial `repos.json` file:
+```bash
+echo "[]" > /etc/ansible/playbooks/repos.json
+```
+
+### 4. Running the Services
+
+1. Start the API service:
+```bash
 ./ansible-api
 ```
 
-The service will start on port 8080 (or the port specified in your .env file).
+2. Start the dashboard (in a separate terminal):
+```bash
+cd /etc/ansible/playbooks
+python3 scripts/log_dashboard.py
+```
 
-## Using the API
+The API will be available on port 8080, and the dashboard on port 5000.
 
-### Run a Playbook
+## Using the System
 
+### Repository Management
+
+Use the `manage_repos.sh` script to manage repositories:
+
+```bash
+# List repositories
+./scripts/manage_repos.sh list
+
+# Add a repository
+./scripts/manage_repos.sh add my-repo https://github.com/user/repo.git
+
+# Remove a repository
+./scripts/manage_repos.sh remove my-repo
+
+# Run a playbook
+./scripts/manage_repos.sh run my-repo site --branch main --extra "-e env=prod"
+
+# View logs
+./scripts/manage_repos.sh logs my-repo
+```
+
+### API Endpoints
+
+1. Run a playbook:
 ```bash
 curl -X POST http://localhost:8080/run-playbook \
   -H "Content-Type: application/json" \
   -d '{
-    "playbook": "site",
-    "inventory": "production",
+    "playbook": "run_playbook",
+    "inventory": "local",
     "extra_vars": {
-      "env": "prod",
-      "app_name": "myapp"
+      "repo_url": "https://github.com/user/repo.git",
+      "repo_name": "my-repo",
+      "playbook_name": "site",
+      "branch": "main",
+      "rollback": true
     }
   }'
 ```
 
-### Check Playbook Status
-
-```bash
-curl http://localhost:8080/status/{job_id}
-```
-
-## Available Playbooks
-
-The service is configured to run these playbooks:
-- `site` - Main deployment playbook
-- `deploy` - Application deployment
-- `backup` - Backup operations
-- `maintenance` - Maintenance tasks
+2. View dashboard:
+- Open `http://localhost:5000` in your browser
+- View statistics and logs for all repositories
+- Monitor playbook execution status
 
 ## Testing
 
 ### 1. Local Testing
 
+1. Add a test repository:
 ```bash
-# Test the API is running
+./scripts/manage_repos.sh add test-repo https://github.com/user/test-playbooks.git
+```
+
+2. Create a test log:
+```bash
+mkdir -p /etc/ansible/playbooks/logs/test-repo
+echo "=== Playbook Execution Log ===
+Start Time: $(date)
+Repository: https://github.com/user/test-playbooks.git
+Branch: main
+Playbook: test.yml
+============================" > /etc/ansible/playbooks/logs/test-repo/test.log
+```
+
+3. Test the dashboard:
+- Open `http://localhost:5000`
+- Verify that the test repository appears
+- Check that the log is displayed correctly
+
+4. Test API endpoints:
+```bash
+# Health check
 curl http://localhost:8080/health
 
-# Test running a simple playbook
+# Run a test playbook
 curl -X POST http://localhost:8080/run-playbook \
   -H "Content-Type: application/json" \
   -d '{
-    "playbook": "site",
+    "playbook": "run_playbook",
     "inventory": "local",
     "extra_vars": {
-      "env": "dev",
-      "app_name": "testapp"
+      "repo_url": "https://github.com/user/test-playbooks.git",
+      "repo_name": "test-repo",
+      "playbook_name": "test",
+      "branch": "main"
     }
   }'
 ```
@@ -97,58 +171,72 @@ curl -X POST http://localhost:8080/run-playbook \
 
 1. Deploy to your server:
 ```bash
-ansible-playbook -i inventory/production.ini site.yml -e "env=prod app_name=myapp"
+# Copy files to server
+scp ansible-api user@server:/usr/local/bin/
+scp -r /etc/ansible/playbooks user@server:/etc/ansible/
+
+# Set up systemd service
+sudo cp scripts/ansible-dashboard.service /etc/systemd/system/
+sudo systemctl daemon-reload
+sudo systemctl enable ansible-dashboard
+sudo systemctl start ansible-dashboard
 ```
 
 2. Test the deployment:
 ```bash
-# Check if the service is running
+# Check if services are running
 curl http://your-server:8080/health
+curl http://your-server:5000
 
-# Run a test playbook
-curl -X POST http://your-server:8080/run-playbook \
-  -H "Content-Type: application/json" \
-  -d '{
-    "playbook": "site",
-    "inventory": "production",
-    "extra_vars": {
-      "env": "prod",
-      "app_name": "myapp"
-    }
-  }'
+# Add a production repository
+./scripts/manage_repos.sh add prod-repo https://github.com/org/prod-playbooks.git
+
+# Run a production playbook
+./scripts/manage_repos.sh run prod-repo site --branch main --extra "-e env=prod"
 ```
 
 ## Monitoring
 
-The service includes monitoring endpoints:
-- Prometheus metrics: `http://your-server:9090`
-- Node metrics: `http://your-server:9100/metrics`
-- Nginx metrics: `http://your-server:9113/metrics`
-- Application metrics: `http://your-server:8080/metrics`
+The system includes:
+- Real-time dashboard at `http://your-server:5000`
+- Repository-specific logs
+- Execution statistics
+- Success/failure tracking
 
 ## Security
 
-The service includes:
-- Secure SSH configuration
-- Fail2ban protection
-- Firewall rules (in production)
-- Secure file permissions
+The system includes:
+- Secure repository management
+- Automatic backups before execution
+- Rollback capabilities
+- Logging of all operations
+- Clean separation of concerns
 
 ## Troubleshooting
 
-1. Check the service logs:
+1. Check service logs:
 ```bash
+# API service
 journalctl -u ansible-api
+
+# Dashboard
+journalctl -u ansible-dashboard
 ```
 
-2. Verify playbook execution:
+2. Verify repository configuration:
 ```bash
-ansible-playbook -i inventory/production.ini site.yml --check
+cat /etc/ansible/playbooks/repos.json
 ```
 
-3. Test connectivity:
+3. Check log files:
+```bash
+ls -l /etc/ansible/playbooks/logs/
+```
+
+4. Test connectivity:
 ```bash
 curl -v http://localhost:8080/health
+curl -v http://localhost:5000
 ```
 
 ## Support
