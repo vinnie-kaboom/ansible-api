@@ -1,0 +1,105 @@
+name: Ansible Deployment
+
+on:
+  push:
+    branches: [ main ]
+  workflow_dispatch:
+    inputs:
+      environment:
+        description: 'Environment to deploy to'
+        required: true
+        default: 'prod'
+        type: choice
+        options:
+          - prod
+          - staging
+      branch:
+        description: 'Branch to use for playbooks'
+        required: false
+        default: 'main'
+        type: string
+
+jobs:
+  deploy:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v4
+
+      - name: Trigger Ansible API
+        id: trigger
+        run: |
+          # Validate required secrets
+          if [ -z "${{ secrets.ANSIBLE_API_URL }}" ]; then
+            echo "::error::ANSIBLE_API_URL secret is not set"
+            exit 1
+          fi
+
+          # Prepare the request payload
+          PAYLOAD=$(cat << EOF
+          {
+            "playbook": "site.yml",
+            "branch": "${{ github.event.inputs.branch || 'main' }}",
+            "extra_vars": {
+              "env": "${{ github.event.inputs.environment || 'prod' }}",
+              "commit": "${{ github.sha }}",
+              "branch": "${{ github.ref_name }}",
+              "triggered_by": "${{ github.actor }}"
+            }
+          }
+          EOF
+          )
+
+          # Make the API request
+          RESPONSE=$(curl -s -X POST ${{ secrets.ANSIBLE_API_URL }}/run-playbook \
+            -H "Content-Type: application/json" \
+            -d "$PAYLOAD")
+
+          # Check if the request was successful
+          if [ $? -ne 0 ]; then
+            echo "::error::Failed to trigger Ansible API"
+            exit 1
+          fi
+
+          # Extract job ID
+          JOB_ID=$(echo $RESPONSE | jq -r '.job_id')
+          if [ -z "$JOB_ID" ] || [ "$JOB_ID" = "null" ]; then
+            echo "::error::Failed to get job ID from response: $RESPONSE"
+            exit 1
+          fi
+
+          echo "RESPONSE=$RESPONSE"
+          echo "JOB_ID=$JOB_ID" >> "$GITHUB_ENV"
+
+      - name: Wait for Completion
+        run: |
+          MAX_ATTEMPTS=30  # 5 minutes total (30 * 10 seconds)
+          ATTEMPT=1
+
+          while [ $ATTEMPT -le $MAX_ATTEMPTS ]; do
+            echo "Checking status (attempt $ATTEMPT of $MAX_ATTEMPTS)..."
+            
+            STATUS_RESPONSE=$(curl -s ${{ secrets.ANSIBLE_API_URL }}/status/${{ env.JOB_ID }})
+            STATUS=$(echo $STATUS_RESPONSE | jq -r '.status')
+            
+            if [ "$STATUS" = "success" ]; then
+              echo "Deployment completed successfully!"
+              echo "Output:"
+              echo "$STATUS_RESPONSE" | jq -r '.output'
+              exit 0
+            elif [ "$STATUS" = "failed" ]; then
+              echo "::error::Deployment failed!"
+              echo "Error:"
+              echo "$STATUS_RESPONSE" | jq -r '.error'
+              echo "Output:"
+              echo "$STATUS_RESPONSE" | jq -r '.output'
+              exit 1
+            fi
+            
+            echo "Current status: $STATUS"
+            sleep 10
+            ATTEMPT=$((ATTEMPT + 1))
+          done
+
+          echo "::error::Deployment timed out after 5 minutes"
+          exit 1 
