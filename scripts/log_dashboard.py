@@ -6,14 +6,18 @@ import json
 from datetime import datetime
 import glob
 
-app = Flask(__name__)
-
 # Configuration
 CONFIG = {
     'log_dir': '/etc/ansible/playbooks/logs',
     'repos_file': '/etc/ansible/playbooks/repos.json',
-    'template_dir': '/etc/ansible/playbooks/templates'
+    'template_dir': '/etc/ansible/playbooks/templates',
+    'port': 8081  # Changed from 5000 to 8081
 }
+
+# Create Flask app with explicit template folder
+app = Flask(__name__, 
+    template_folder=CONFIG['template_dir'],
+    static_folder=CONFIG['template_dir'])
 
 def get_repo_info():
     """Get repository information from repos.json"""
@@ -90,4 +94,7 @@ def get_stats():
     return jsonify(stats)
 
 if __name__ == '__main__':
-    app.run(host='0.0.0.0', port=5000, debug=True) 
+    # Ensure template directory exists
+    os.makedirs(CONFIG['template_dir'], exist_ok=True)
+    print(f"Starting dashboard on port {CONFIG['port']}")
+    app.run(host='0.0.0.0', port=CONFIG['port'], debug=True) 

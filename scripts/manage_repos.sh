@@ -7,7 +7,7 @@ YELLOW='\033[1;33m'
 NC='\033[0m' # No Color
 
 # Configuration file
-CONFIG_FILE="repos.json"
+CONFIG_FILE="/etc/ansible/playbooks/repos.json"
 
 # Function to display help
 show_help() {
