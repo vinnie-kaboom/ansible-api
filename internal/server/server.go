@@ -1,7 +1,6 @@
 package server
 
 import (
-	"bytes"
 	"context"
 	"encoding/json"
 	"fmt"
@@ -9,9 +8,11 @@ import (
 	"os"
 	"os/exec"
 	"path/filepath"
+	"strings"
 	"sync"
 	"time"
 
+	"github.com/go-playground/validator/v10"
 	"github.com/rs/zerolog"
 	"github.com/rs/zerolog/log"
 	"golang.org/x/time/rate"
@@ -36,16 +37,15 @@ type Job struct {
 	Error         string
 	RepositoryURL string
 	PlaybookPath  string
-	WebhookURL    string
+	RetryCount    int
 }
 
 type PlaybookRequest struct {
-	RepositoryURL string                       `json:"repository_url"`
-	PlaybookPath  string                       `json:"playbook_path"`
-	Inventory     map[string]map[string]string `json:"inventory"`
+	RepositoryURL string                       `json:"repository_url" validate:"required,url"`
+	PlaybookPath  string                       `json:"playbook_path" validate:"required"`
+	Inventory     map[string]map[string]string `json:"inventory" validate:"required,min=1"`
 	Environment   map[string]string            `json:"environment"`
 	Secrets       map[string]string            `json:"secrets"`
-	WebhookURL    string                       `json:"webhook_url"`
 }
 
 func New() (*Server, error) {
@@ -57,10 +57,9 @@ func New() (*Server, error) {
 		logger:      log.With().Str("component", "server").Logger(),
 		jobs:        make(map[string]*Job),
 		jobQueue:    make(chan *Job, 100),
-		rateLimiter: rate.NewLimiter(rate.Every(time.Second), 10), // 10 requests per second
+		rateLimiter: rate.NewLimiter(rate.Every(time.Second), 10),
 	}
 
-	// Register routes
 	s.registerRoutes()
 
 	s.server = &http.Server{
@@ -68,7 +67,6 @@ func New() (*Server, error) {
 		Handler: s.mux,
 	}
 
-	// Start job processor
 	go s.processJobs()
 
 	return s, nil
@@ -78,7 +76,7 @@ func (s *Server) registerRoutes() {
 	s.mux.HandleFunc("/api/health", s.handleHealth())
 	s.mux.HandleFunc("/api/playbook/run", s.handlePlaybookRun())
 	s.mux.HandleFunc("/api/jobs", s.handleJobs())
-	s.mux.HandleFunc("/api/jobs/", s.handleJobStatus())
+	s.mux.HandleFunc("/api/jobs/", s.handleJobsDispatcher())
 }
 
 func (s *Server) handleHealth() http.HandlerFunc {
@@ -122,6 +120,14 @@ func (s *Server) handlePlaybookRun() http.HandlerFunc {
 			return
 		}
 
+		// Use go-playground/validator for input validation
+		validate := validator.New()
+		if err := validate.Struct(req); err != nil {
+			s.logger.Error().Err(err).Msg("Validation failed")
+			http.Error(w, err.Error(), http.StatusBadRequest)
+			return
+		}
+
 		// Create new job
 		job := &Job{
 			ID:            fmt.Sprintf("job-%d", time.Now().UnixNano()),
@@ -129,7 +135,6 @@ func (s *Server) handlePlaybookRun() http.HandlerFunc {
 			StartTime:     time.Now(),
 			RepositoryURL: req.RepositoryURL,
 			PlaybookPath:  req.PlaybookPath,
-			WebhookURL:    req.WebhookURL,
 		}
 
 		// Add job to map
@@ -147,8 +152,7 @@ func (s *Server) handlePlaybookRun() http.HandlerFunc {
 		}
 		w.Header().Set("Content-Type", "application/json")
 		w.WriteHeader(http.StatusAccepted)
-		err := json.NewEncoder(w).Encode(response)
-		if err != nil {
+		if err := json.NewEncoder(w).Encode(response); err != nil {
 			s.logger.Error().Err(err).Msg("Failed to encode response")
 			return
 		}
@@ -174,29 +178,77 @@ func (s *Server) handleJobs() http.HandlerFunc {
 	}
 }
 
-func (s *Server) handleJobStatus() http.HandlerFunc {
+func (s *Server) handleJobsDispatcher() http.HandlerFunc {
 	return func(w http.ResponseWriter, r *http.Request) {
-		if r.Method != http.MethodGet {
-			http.Error(w, "Method not allowed", http.StatusMethodNotAllowed)
+		path := r.URL.Path[len("/api/jobs/"):]
+		if strings.HasSuffix(path, "/retry") && r.Method == http.MethodPost {
+			// /api/jobs/{id}/retry
+			jobID := strings.TrimSuffix(path, "/retry")
+			jobID = strings.TrimSuffix(jobID, "/")
+			s.handleJobRetry(jobID, w)
+			return
+		} else if r.Method == http.MethodGet {
+			// /api/jobs/{id}
+			jobID := path
+			s.handleJobStatus(jobID, w)
 			return
 		}
+		http.Error(w, "Not found", http.StatusNotFound)
+	}
+}
 
-		jobID := r.URL.Path[len("/api/jobs/"):]
-		s.jobMutex.RLock()
-		job, exists := s.jobs[jobID]
-		s.jobMutex.RUnlock()
+func (s *Server) handleJobStatus(jobID string, w http.ResponseWriter) {
+	s.jobMutex.RLock()
+	job, exists := s.jobs[jobID]
+	s.jobMutex.RUnlock()
 
-		if !exists {
-			http.Error(w, "Job not found", http.StatusNotFound)
-			return
-		}
+	if !exists {
+		http.Error(w, "Job not found", http.StatusNotFound)
+		return
+	}
 
-		w.Header().Set("Content-Type", "application/json")
-		err := json.NewEncoder(w).Encode(job)
-		if err != nil {
-			s.logger.Error().Err(err).Msg("Failed to encode job status response")
-			return
-		}
+	w.Header().Set("Content-Type", "application/json")
+	if err := json.NewEncoder(w).Encode(job); err != nil {
+		s.logger.Error().Err(err).Msg("Failed to encode job status response")
+		return
+	}
+}
+
+func (s *Server) handleJobRetry(jobID string, w http.ResponseWriter) {
+	s.jobMutex.RLock()
+	origJob, exists := s.jobs[jobID]
+	s.jobMutex.RUnlock()
+	if !exists {
+		http.Error(w, "Job not found", http.StatusNotFound)
+		return
+	}
+
+	// Clone the job with incremented RetryCount and new ID
+	newJob := *origJob
+	newJob.ID = fmt.Sprintf("job-%d", time.Now().UnixNano())
+	newJob.Status = "queued"
+	newJob.StartTime = time.Now()
+	newJob.EndTime = time.Time{}
+	newJob.Output = ""
+	newJob.Error = ""
+	newJob.RetryCount = origJob.RetryCount + 1
+
+	s.jobMutex.Lock()
+	s.jobs[newJob.ID] = &newJob
+	s.jobMutex.Unlock()
+
+	s.jobQueue <- &newJob
+
+	response := map[string]string{
+		"status":   "queued",
+		"job_id":   newJob.ID,
+		"retry_of": jobID,
+	}
+	w.Header().Set("Content-Type", "application/json")
+	w.WriteHeader(http.StatusAccepted)
+	if err := json.NewEncoder(w).Encode(response); err != nil {
+		s.logger.Error().Err(err).Msg("Failed to encode retry response")
+		return
 	}
 }
 
@@ -212,12 +264,12 @@ func (s *Server) processJobs() {
 			s.updateJobStatus(job, "failed", "", err.Error())
 			continue
 		}
-		defer os.RemoveAll(tmpDir)
 
 		// 2. Clone the repo
 		cmd := exec.Command("git", "clone", job.RepositoryURL, tmpDir)
 		if output, err := cmd.CombinedOutput(); err != nil {
 			s.updateJobStatus(job, "failed", string(output), err.Error())
+			os.RemoveAll(tmpDir)
 			continue
 		}
 
@@ -226,9 +278,9 @@ func (s *Server) processJobs() {
 		inventoryFile, err := os.Create(inventoryFilePath)
 		if err != nil {
 			s.updateJobStatus(job, "failed", "", err.Error())
+			os.RemoveAll(tmpDir)
 			continue
 		}
-		defer inventoryFile.Close()
 
 		// 4. Run ansible-playbook
 		playbookPath := filepath.Join(tmpDir, job.PlaybookPath)
@@ -236,10 +288,14 @@ func (s *Server) processJobs() {
 		ansibleCmd.Dir = tmpDir
 		if output, err := ansibleCmd.CombinedOutput(); err != nil {
 			s.updateJobStatus(job, "failed", string(output), err.Error())
+			inventoryFile.Close()
+			os.RemoveAll(tmpDir)
 			continue
 		}
 
 		s.updateJobStatus(job, "completed", "", "")
+		inventoryFile.Close()
+		os.RemoveAll(tmpDir)
 	}
 }
 
@@ -251,24 +307,6 @@ func (s *Server) updateJobStatus(job *Job, status, output, errMsg string) {
 	job.Output = output
 	job.Error = errMsg
 	job.EndTime = time.Now()
-
-	// Webhook notification
-	if job.WebhookURL != "" && (status == "completed" || status == "failed") {
-		go func(jobCopy Job) {
-			payload, err := json.Marshal(jobCopy)
-			if err != nil {
-				s.logger.Error().Err(err).Str("webhook", jobCopy.WebhookURL).Msg("Failed to marshal webhook payload")
-				return
-			}
-			resp, err := http.Post(jobCopy.WebhookURL, "application/json", bytes.NewReader(payload))
-			if err != nil {
-				s.logger.Error().Err(err).Str("webhook", jobCopy.WebhookURL).Msg("Failed to send webhook")
-				return
-			}
-			defer resp.Body.Close()
-			s.logger.Info().Str("webhook", jobCopy.WebhookURL).Int("status", resp.StatusCode).Msg("Webhook sent")
-		}(*job)
-	}
 }
 
 func (s *Server) Start() error {
