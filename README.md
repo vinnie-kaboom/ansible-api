@@ -64,11 +64,13 @@ api_base_url = https://api.github.com
 ## API Endpoints
 
 ### Health Check
+
 ```bash
 curl http://localhost:8080/api/health
 ```
 
 ### Run Playbook (Git Repo)
+
 ```bash
 curl -X POST http://localhost:8080/api/playbook/run \
   -H "Content-Type: application/json" \
@@ -85,33 +87,39 @@ curl -X POST http://localhost:8080/api/playbook/run \
 ```
 
 ### Upload Playbook File
+
 ```bash
 curl -X POST http://localhost:8080/api/upload/playbook \
   -F "file=@/path/to/playbook.yml"
 ```
 
 ### Upload Inventory File
+
 ```bash
 curl -X POST http://localhost:8080/api/upload/inventory \
   -F "file=@/path/to/inventory.ini"
 ```
 
 ### List Jobs
+
 ```bash
 curl http://localhost:8080/api/jobs
 ```
 
 ### Get Job Status
+
 ```bash
 curl http://localhost:8080/api/jobs/<job_id>
 ```
 
 ### Retry Job
+
 ```bash
 curl -X POST http://localhost:8080/api/jobs/<job_id>/retry
 ```
 
 ### Cancel Job (if implemented)
+
 ```bash
 curl -X POST http://localhost:8080/api/jobs/<job_id>/cancel
 ```
@@ -131,6 +139,7 @@ api_base_url = https://api.github.com
 ```
 
 ## Notes
+
 - All configuration is loaded from `config.cfg`.
 - The server logs to stdout in structured format.
 - Jobs are processed asynchronously; use the job endpoints to track status.
@@ -138,9 +147,11 @@ api_base_url = https://api.github.com
 - No shell scripts or Python dashboard are required or supported in this Go version.
 
 ## Troubleshooting
+
 - Ensure Ansible and Git are installed and in your PATH.
 - Check the logs for errors related to config, authentication, or playbook execution.
 - For GitHub App issues, verify your App ID, Installation ID, and PEM file.
 
 ## License
+
 MIT

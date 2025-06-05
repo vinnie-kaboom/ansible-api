@@ -14,7 +14,7 @@ import (
 	"sync"
 	"time"
 
-	service_model "ansible-api/datamodel/service-model"
+	servicemodel "ansible-api/datamodel/service-model"
 	"ansible-api/internal/githubapp"
 
 	"github.com/go-playground/validator/v10"
@@ -28,13 +28,10 @@ import (
 var httpsGitRegex = regexp.MustCompile(`^https://[\w.@:/\-~]+\.git$`)
 
 func httpsGitURLValidator(fl validator.FieldLevel) bool {
-	url := fl.Field().String()
-	return httpsGitRegex.MatchString(url)
+	gitURL := fl.Field().String()
+	return httpsGitRegex.MatchString(gitURL)
 }
 
-// Define PlaybookRequest struct above its first usage
-// This should match the expected JSON input for playbook runs
-// Example:
 type PlaybookRequest struct {
 	RepositoryURL string                       `json:"repository_url" validate:"required,httpsgit"`
 	PlaybookPath  string                       `json:"playbook_path" validate:"required"`
@@ -47,9 +44,9 @@ type Server struct {
 	Mux                  *http.ServeMux
 	Server               *http.Server
 	Logger               zerolog.Logger
-	Jobs                 map[string]*service_model.Job
+	Jobs                 map[string]*servicemodel.Job
 	JobMutex             sync.RWMutex
-	JobQueue             chan *service_model.Job
+	JobQueue             chan *servicemodel.Job
 	RateLimiter          *rate.Limiter
 	GithubAppID          int
 	GithubInstallationID int
@@ -75,8 +72,8 @@ func New() (*Server, error) {
 	s := &Server{
 		Mux:                  http.NewServeMux(),
 		Logger:               log.With().Str("component", "server").Logger(),
-		Jobs:                 make(map[string]*service_model.Job),
-		JobQueue:             make(chan *service_model.Job, 100),
+		Jobs:                 make(map[string]*servicemodel.Job),
+		JobQueue:             make(chan *servicemodel.Job, 100),
 		RateLimiter:          rate.NewLimiter(rate.Every(time.Second), 10),
 		GithubAppID:          appID,
 		GithubInstallationID: installationID,
@@ -144,14 +141,18 @@ func (s *Server) handlePlaybookRun() http.HandlerFunc {
 		}
 
 		validate := validator.New()
-		validate.RegisterValidation("httpsgit", httpsGitURLValidator)
+		err := validate.RegisterValidation("httpsgit", httpsGitURLValidator)
+		if err != nil {
+			s.Logger.Error().Err(err).Msg("Failed to register httpsgit validator")
+			return
+		}
 		if err := validate.Struct(req); err != nil {
 			s.Logger.Error().Err(err).Msg("Validation failed")
 			http.Error(w, err.Error(), http.StatusBadRequest)
 			return
 		}
 
-		job := &service_model.Job{
+		job := &servicemodel.Job{
 			ID:            fmt.Sprintf("job-%d", time.Now().UnixNano()),
 			Status:        "queued",
 			StartTime:     time.Now(),
@@ -282,16 +283,20 @@ func (s *Server) processJobs() {
 
 		s.Logger.Info().Msg("Attempting to authenticate with GitHub")
 
-		token, err := githubapp.GetInstallationToken(
-			s.GithubAppID,
-			s.GithubInstallationID,
-			s.GithubPrivateKeyPath,
-			s.GithubAPIBaseURL,
-		)
+		token, err := (&githubapp.DefaultAuthenticator{}).GetInstallationToken(githubapp.AuthConfig{
+			AppID:          s.GithubAppID,
+			InstallationID: s.GithubInstallationID,
+			PrivateKeyPath: s.GithubPrivateKeyPath,
+			APIBaseURL:     s.GithubAPIBaseURL,
+		})
 		if err != nil {
 			s.Logger.Error().Err(err).Msg("Failed to authenticate with GitHub")
 			s.updateJobStatus(job, "failed", "", "GitHub App authentication failed: "+err.Error())
-			os.RemoveAll(tmpDir)
+			err := os.RemoveAll(tmpDir)
+			if err != nil {
+				s.Logger.Error().Err(err).Msg("Failed to remove temporary directory")
+				return
+			}
 			continue
 		}
 
@@ -307,7 +312,11 @@ func (s *Server) processJobs() {
 		})
 		if err != nil {
 			s.updateJobStatus(job, "failed", "", err.Error())
-			os.RemoveAll(tmpDir)
+			err := os.RemoveAll(tmpDir)
+			if err != nil {
+				s.Logger.Error().Err(err).Msg("Failed to remove temporary directory")
+				return
+			}
 			continue
 		}
 
@@ -315,7 +324,11 @@ func (s *Server) processJobs() {
 		inventoryFile, err := os.Create(inventoryFilePath)
 		if err != nil {
 			s.updateJobStatus(job, "failed", "", err.Error())
-			os.RemoveAll(tmpDir)
+			err := os.RemoveAll(tmpDir)
+			if err != nil {
+				s.Logger.Error().Err(err).Msg("Failed to remove temporary directory")
+				return
+			}
 			continue
 		}
 
@@ -324,18 +337,34 @@ func (s *Server) processJobs() {
 		ansibleCmd.Dir = tmpDir
 		if output, err := ansibleCmd.CombinedOutput(); err != nil {
 			s.updateJobStatus(job, "failed", string(output), err.Error())
-			inventoryFile.Close()
-			os.RemoveAll(tmpDir)
+			err := inventoryFile.Close()
+			if err != nil {
+				s.Logger.Error().Err(err).Msg("Failed to close inventory file")
+				return
+			}
+			err = os.RemoveAll(tmpDir)
+			if err != nil {
+				s.Logger.Error().Err(err).Msg("Failed to remove temporary directory")
+				return
+			}
 			continue
 		}
 
 		s.updateJobStatus(job, "completed", "", "")
-		inventoryFile.Close()
-		os.RemoveAll(tmpDir)
+		err = inventoryFile.Close()
+		if err != nil {
+			s.Logger.Error().Err(err).Msg("Failed to close inventory file")
+			return
+		}
+		err = os.RemoveAll(tmpDir)
+		if err != nil {
+			s.Logger.Error().Err(err).Msg("Failed to remove temporary directory")
+			return
+		}
 	}
 }
 
-func (s *Server) updateJobStatus(job *service_model.Job, status, output, errMsg string) {
+func (s *Server) updateJobStatus(job *servicemodel.Job, status, output, errMsg string) {
 	s.JobMutex.Lock()
 	defer s.JobMutex.Unlock()
 
