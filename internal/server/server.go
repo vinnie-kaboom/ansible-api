@@ -5,66 +5,90 @@ import (
 	"encoding/json"
 	"fmt"
 	"net/http"
+	"net/url"
 	"os"
 	"os/exec"
 	"path/filepath"
+	"regexp"
 	"strings"
 	"sync"
 	"time"
+
+	service_model "ansible-api/datamodel/service-model"
+	"ansible-api/internal/githubapp"
 
 	"github.com/go-playground/validator/v10"
 	"github.com/rs/zerolog"
 	"github.com/rs/zerolog/log"
 	"golang.org/x/time/rate"
+	"gopkg.in/ini.v1"
+	"gopkg.in/src-d/go-git.v4"
 )
 
-type Server struct {
-	mux         *http.ServeMux
-	server      *http.Server
-	logger      zerolog.Logger
-	jobs        map[string]*Job
-	jobMutex    sync.RWMutex
-	jobQueue    chan *Job
-	rateLimiter *rate.Limiter
+var httpsGitRegex = regexp.MustCompile(`^https://[\w.@:/\-~]+\.git$`)
+
+func httpsGitURLValidator(fl validator.FieldLevel) bool {
+	url := fl.Field().String()
+	return httpsGitRegex.MatchString(url)
 }
 
-type Job struct {
-	ID            string
-	Status        string
-	StartTime     time.Time
-	EndTime       time.Time
-	Output        string
-	Error         string
-	RepositoryURL string
-	PlaybookPath  string
-	RetryCount    int
-}
-
+// Define PlaybookRequest struct above its first usage
+// This should match the expected JSON input for playbook runs
+// Example:
 type PlaybookRequest struct {
-	RepositoryURL string                       `json:"repository_url" validate:"required,url"`
+	RepositoryURL string                       `json:"repository_url" validate:"required,httpsgit"`
 	PlaybookPath  string                       `json:"playbook_path" validate:"required"`
 	Inventory     map[string]map[string]string `json:"inventory" validate:"required,min=1"`
 	Environment   map[string]string            `json:"environment"`
 	Secrets       map[string]string            `json:"secrets"`
 }
 
+type Server struct {
+	Mux                  *http.ServeMux
+	Server               *http.Server
+	Logger               zerolog.Logger
+	Jobs                 map[string]*service_model.Job
+	JobMutex             sync.RWMutex
+	JobQueue             chan *service_model.Job
+	RateLimiter          *rate.Limiter
+	GithubAppID          int
+	GithubInstallationID int
+	GithubPrivateKeyPath string
+	GithubAPIBaseURL     string
+}
+
 func New() (*Server, error) {
 	zerolog.TimeFieldFormat = time.RFC3339
 	log.Logger = log.Output(zerolog.ConsoleWriter{Out: os.Stdout, TimeFormat: time.RFC3339})
 
+	cfg, err := ini.Load("config.cfg")
+	if err != nil {
+		log.Fatal().Err(err).Msg("Failed to load config.cfg")
+	}
+
+	appID, _ := cfg.Section("githubapp").Key("app_id").Int()
+	installationID, _ := cfg.Section("githubapp").Key("installation_id").Int()
+	privateKeyPath := cfg.Section("githubapp").Key("private_key_path").String()
+	apiBaseURL := cfg.Section("githubapp").Key("api_base_url").String()
+	serverPort := cfg.Section("server").Key("port").MustString("8080") //default port
+
 	s := &Server{
-		mux:         http.NewServeMux(),
-		logger:      log.With().Str("component", "server").Logger(),
-		jobs:        make(map[string]*Job),
-		jobQueue:    make(chan *Job, 100),
-		rateLimiter: rate.NewLimiter(rate.Every(time.Second), 10),
+		Mux:                  http.NewServeMux(),
+		Logger:               log.With().Str("component", "server").Logger(),
+		Jobs:                 make(map[string]*service_model.Job),
+		JobQueue:             make(chan *service_model.Job, 100),
+		RateLimiter:          rate.NewLimiter(rate.Every(time.Second), 10),
+		GithubAppID:          appID,
+		GithubInstallationID: installationID,
+		GithubPrivateKeyPath: privateKeyPath,
+		GithubAPIBaseURL:     apiBaseURL,
 	}
 
 	s.registerRoutes()
 
-	s.server = &http.Server{
-		Addr:    ":8080",
-		Handler: s.mux,
+	s.Server = &http.Server{
+		Addr:    ":" + serverPort,
+		Handler: s.Mux,
 	}
 
 	go s.processJobs()
@@ -73,10 +97,10 @@ func New() (*Server, error) {
 }
 
 func (s *Server) registerRoutes() {
-	s.mux.HandleFunc("/api/health", s.handleHealth())
-	s.mux.HandleFunc("/api/playbook/run", s.handlePlaybookRun())
-	s.mux.HandleFunc("/api/jobs", s.handleJobs())
-	s.mux.HandleFunc("/api/jobs/", s.handleJobsDispatcher())
+	s.Mux.HandleFunc("/api/health", s.handleHealth())
+	s.Mux.HandleFunc("/api/playbook/run", s.handlePlaybookRun())
+	s.Mux.HandleFunc("/api/jobs", s.handleJobs())
+	s.Mux.HandleFunc("/api/jobs/", s.handleJobsDispatcher())
 }
 
 func (s *Server) handleHealth() http.HandlerFunc {
@@ -94,7 +118,7 @@ func (s *Server) handleHealth() http.HandlerFunc {
 		w.Header().Set("Content-Type", "application/json")
 		err := json.NewEncoder(w).Encode(response)
 		if err != nil {
-			s.logger.Error().Err(err).Msg("Failed to encode health response")
+			s.Logger.Error().Err(err).Msg("Failed to encode health response")
 			return
 		}
 	}
@@ -107,29 +131,27 @@ func (s *Server) handlePlaybookRun() http.HandlerFunc {
 			return
 		}
 
-		// Rate limiting
-		if !s.rateLimiter.Allow() {
+		if !s.RateLimiter.Allow() {
 			http.Error(w, "Too many requests", http.StatusTooManyRequests)
 			return
 		}
 
 		var req PlaybookRequest
 		if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
-			s.logger.Error().Err(err).Msg("Invalid request body")
+			s.Logger.Error().Err(err).Msg("Invalid request body")
 			http.Error(w, "Invalid request body", http.StatusBadRequest)
 			return
 		}
 
-		// Use go-playground/validator for input validation
 		validate := validator.New()
+		validate.RegisterValidation("httpsgit", httpsGitURLValidator)
 		if err := validate.Struct(req); err != nil {
-			s.logger.Error().Err(err).Msg("Validation failed")
+			s.Logger.Error().Err(err).Msg("Validation failed")
 			http.Error(w, err.Error(), http.StatusBadRequest)
 			return
 		}
 
-		// Create new job
-		job := &Job{
+		job := &service_model.Job{
 			ID:            fmt.Sprintf("job-%d", time.Now().UnixNano()),
 			Status:        "queued",
 			StartTime:     time.Now(),
@@ -137,15 +159,12 @@ func (s *Server) handlePlaybookRun() http.HandlerFunc {
 			PlaybookPath:  req.PlaybookPath,
 		}
 
-		// Add job to map
-		s.jobMutex.Lock()
-		s.jobs[job.ID] = job
-		s.jobMutex.Unlock()
+		s.JobMutex.Lock()
+		s.Jobs[job.ID] = job
+		s.JobMutex.Unlock()
 
-		// Queue job
-		s.jobQueue <- job
+		s.JobQueue <- job
 
-		// Respond with job ID
 		response := map[string]string{
 			"status": "queued",
 			"job_id": job.ID,
@@ -153,7 +172,7 @@ func (s *Server) handlePlaybookRun() http.HandlerFunc {
 		w.Header().Set("Content-Type", "application/json")
 		w.WriteHeader(http.StatusAccepted)
 		if err := json.NewEncoder(w).Encode(response); err != nil {
-			s.logger.Error().Err(err).Msg("Failed to encode response")
+			s.Logger.Error().Err(err).Msg("Failed to encode response")
 			return
 		}
 	}
@@ -166,13 +185,13 @@ func (s *Server) handleJobs() http.HandlerFunc {
 			return
 		}
 
-		s.jobMutex.RLock()
-		defer s.jobMutex.RUnlock()
+		s.JobMutex.RLock()
+		defer s.JobMutex.RUnlock()
 
 		w.Header().Set("Content-Type", "application/json")
-		err := json.NewEncoder(w).Encode(s.jobs)
+		err := json.NewEncoder(w).Encode(s.Jobs)
 		if err != nil {
-			s.logger.Error().Err(err).Msg("Failed to encode jobs response")
+			s.Logger.Error().Err(err).Msg("Failed to encode jobs response")
 			return
 		}
 	}
@@ -182,13 +201,11 @@ func (s *Server) handleJobsDispatcher() http.HandlerFunc {
 	return func(w http.ResponseWriter, r *http.Request) {
 		path := r.URL.Path[len("/api/jobs/"):]
 		if strings.HasSuffix(path, "/retry") && r.Method == http.MethodPost {
-			// /api/jobs/{id}/retry
 			jobID := strings.TrimSuffix(path, "/retry")
 			jobID = strings.TrimSuffix(jobID, "/")
 			s.handleJobRetry(jobID, w)
 			return
 		} else if r.Method == http.MethodGet {
-			// /api/jobs/{id}
 			jobID := path
 			s.handleJobStatus(jobID, w)
 			return
@@ -198,9 +215,9 @@ func (s *Server) handleJobsDispatcher() http.HandlerFunc {
 }
 
 func (s *Server) handleJobStatus(jobID string, w http.ResponseWriter) {
-	s.jobMutex.RLock()
-	job, exists := s.jobs[jobID]
-	s.jobMutex.RUnlock()
+	s.JobMutex.RLock()
+	job, exists := s.Jobs[jobID]
+	s.JobMutex.RUnlock()
 
 	if !exists {
 		http.Error(w, "Job not found", http.StatusNotFound)
@@ -209,21 +226,20 @@ func (s *Server) handleJobStatus(jobID string, w http.ResponseWriter) {
 
 	w.Header().Set("Content-Type", "application/json")
 	if err := json.NewEncoder(w).Encode(job); err != nil {
-		s.logger.Error().Err(err).Msg("Failed to encode job status response")
+		s.Logger.Error().Err(err).Msg("Failed to encode job status response")
 		return
 	}
 }
 
 func (s *Server) handleJobRetry(jobID string, w http.ResponseWriter) {
-	s.jobMutex.RLock()
-	origJob, exists := s.jobs[jobID]
-	s.jobMutex.RUnlock()
+	s.JobMutex.RLock()
+	origJob, exists := s.Jobs[jobID]
+	s.JobMutex.RUnlock()
 	if !exists {
 		http.Error(w, "Job not found", http.StatusNotFound)
 		return
 	}
 
-	// Clone the job with incremented RetryCount and new ID
 	newJob := *origJob
 	newJob.ID = fmt.Sprintf("job-%d", time.Now().UnixNano())
 	newJob.Status = "queued"
@@ -233,11 +249,11 @@ func (s *Server) handleJobRetry(jobID string, w http.ResponseWriter) {
 	newJob.Error = ""
 	newJob.RetryCount = origJob.RetryCount + 1
 
-	s.jobMutex.Lock()
-	s.jobs[newJob.ID] = &newJob
-	s.jobMutex.Unlock()
+	s.JobMutex.Lock()
+	s.Jobs[newJob.ID] = &newJob
+	s.JobMutex.Unlock()
 
-	s.jobQueue <- &newJob
+	s.JobQueue <- &newJob
 
 	response := map[string]string{
 		"status":   "queued",
@@ -247,33 +263,54 @@ func (s *Server) handleJobRetry(jobID string, w http.ResponseWriter) {
 	w.Header().Set("Content-Type", "application/json")
 	w.WriteHeader(http.StatusAccepted)
 	if err := json.NewEncoder(w).Encode(response); err != nil {
-		s.logger.Error().Err(err).Msg("Failed to encode retry response")
+		s.Logger.Error().Err(err).Msg("Failed to encode retry response")
 		return
 	}
 }
 
 func (s *Server) processJobs() {
-	for job := range s.jobQueue {
-		s.jobMutex.Lock()
+	for job := range s.JobQueue {
+		s.JobMutex.Lock()
 		job.Status = "running"
-		s.jobMutex.Unlock()
+		s.JobMutex.Unlock()
 
-		// 1. Create a temp directory
 		tmpDir, err := os.MkdirTemp("", "repo")
 		if err != nil {
 			s.updateJobStatus(job, "failed", "", err.Error())
 			continue
 		}
 
-		// 2. Clone the repo
-		cmd := exec.Command("git", "clone", job.RepositoryURL, tmpDir)
-		if output, err := cmd.CombinedOutput(); err != nil {
-			s.updateJobStatus(job, "failed", string(output), err.Error())
+		s.Logger.Info().Msg("Attempting to authenticate with GitHub")
+
+		token, err := githubapp.GetInstallationToken(
+			s.GithubAppID,
+			s.GithubInstallationID,
+			s.GithubPrivateKeyPath,
+			s.GithubAPIBaseURL,
+		)
+		if err != nil {
+			s.Logger.Error().Err(err).Msg("Failed to authenticate with GitHub")
+			s.updateJobStatus(job, "failed", "", "GitHub App authentication failed: "+err.Error())
 			os.RemoveAll(tmpDir)
 			continue
 		}
 
-		// 3. Create inventory file
+		repoPath := extractRepoPath(job.RepositoryURL)
+		cloneURL := githubapp.BuildCloneURL(token, repoPath, "github.com")
+
+		maskedCloneURL := maskTokenInURL(cloneURL)
+		s.Logger.Info().Str("clone_url", maskedCloneURL).Msg("Cloning repository")
+
+		_, err = git.PlainClone(tmpDir, false, &git.CloneOptions{
+			URL:      cloneURL,
+			Progress: os.Stdout,
+		})
+		if err != nil {
+			s.updateJobStatus(job, "failed", "", err.Error())
+			os.RemoveAll(tmpDir)
+			continue
+		}
+
 		inventoryFilePath := filepath.Join(tmpDir, "inventory.ini")
 		inventoryFile, err := os.Create(inventoryFilePath)
 		if err != nil {
@@ -282,7 +319,6 @@ func (s *Server) processJobs() {
 			continue
 		}
 
-		// 4. Run ansible-playbook
 		playbookPath := filepath.Join(tmpDir, job.PlaybookPath)
 		ansibleCmd := exec.Command("ansible-playbook", playbookPath, "-i", inventoryFilePath)
 		ansibleCmd.Dir = tmpDir
@@ -299,9 +335,9 @@ func (s *Server) processJobs() {
 	}
 }
 
-func (s *Server) updateJobStatus(job *Job, status, output, errMsg string) {
-	s.jobMutex.Lock()
-	defer s.jobMutex.Unlock()
+func (s *Server) updateJobStatus(job *service_model.Job, status, output, errMsg string) {
+	s.JobMutex.Lock()
+	defer s.JobMutex.Unlock()
 
 	job.Status = status
 	job.Output = output
@@ -310,16 +346,37 @@ func (s *Server) updateJobStatus(job *Job, status, output, errMsg string) {
 }
 
 func (s *Server) Start() error {
-	s.logger.Info().Str("addr", s.server.Addr).Msg("Starting server")
-	return s.server.ListenAndServe()
+	s.Logger.Info().Str("addr", s.Server.Addr).Msg("Starting server")
+	return s.Server.ListenAndServe()
 }
 
 func (s *Server) Stop() error {
-	if s.server != nil {
-		s.logger.Info().Msg("Stopping server")
+	if s.Server != nil {
+		s.Logger.Info().Msg("Stopping server")
 		ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
 		defer cancel()
-		return s.server.Shutdown(ctx)
+		return s.Server.Shutdown(ctx)
 	}
 	return nil
+}
+
+func extractRepoPath(fullURL string) string {
+	u, err := url.Parse(fullURL)
+	if err != nil {
+		return fullURL // fallback
+	}
+	return u.Path[1:] // remove leading slash
+}
+
+func maskTokenInURL(cloneURL string) string {
+	u, err := url.Parse(cloneURL)
+	if err != nil || u.User == nil {
+		return cloneURL
+	}
+	username := u.User.Username()
+	if _, hasToken := u.User.Password(); hasToken {
+		u.User = url.UserPassword(username, "****")
+		return u.String()
+	}
+	return cloneURL
 }
