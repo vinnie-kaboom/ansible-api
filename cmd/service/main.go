@@ -8,11 +8,17 @@ import (
 
 	"ansible-api/internal/server"
 
+	"github.com/joho/godotenv"
 	"github.com/rs/zerolog"
 	"github.com/rs/zerolog/log"
 )
 
 func main() {
+	// Load .env file
+	if err := godotenv.Load(); err != nil {
+		log.Warn().Err(err).Msg("Error loading .env file")
+	}
+
 	zerolog.TimeFieldFormat = time.RFC3339
 	log.Logger = log.Output(zerolog.ConsoleWriter{Out: os.Stdout, TimeFormat: time.RFC3339})
 	logger := log.With().Str("component", "main").Logger()

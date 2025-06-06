@@ -17,12 +17,12 @@ import (
 
 	servicemodel "ansible-api/datamodel/service-model"
 	"ansible-api/internal/githubapp"
+	"ansible-api/internal/vault"
 
 	"github.com/go-playground/validator/v10"
 	"github.com/rs/zerolog"
 	"github.com/rs/zerolog/log"
 	"golang.org/x/time/rate"
-	"gopkg.in/ini.v1"
 	"gopkg.in/src-d/go-git.v4"
 )
 
@@ -53,22 +53,76 @@ type Server struct {
 	GithubInstallationID int
 	GithubPrivateKeyPath string
 	GithubAPIBaseURL     string
+	VaultClient          *vault.Client
 }
 
 func New() (*Server, error) {
 	zerolog.TimeFieldFormat = time.RFC3339
 	log.Logger = log.Output(zerolog.ConsoleWriter{Out: os.Stdout, TimeFormat: time.RFC3339})
 
-	// Get configuration from environment variables first
-	appID := os.Getenv("GITHUB_APP_ID")
-	installationID := os.Getenv("GITHUB_INSTALLATION_ID")
-	privateKeyPath := os.Getenv("GITHUB_PRIVATE_KEY_PATH")
-	apiBaseURL := os.Getenv("GITHUB_API_BASE_URL")
-	serverPort := os.Getenv("PORT")
-	workerCount := os.Getenv("WORKER_COUNT")
-	retentionHours := os.Getenv("RETENTION_HOURS")
-	tempPatterns := os.Getenv("TEMP_PATTERNS")
-	rateLimit := os.Getenv("RATE_LIMIT_REQUESTS_PER_SECOND")
+	// Initialize Vault client
+	vaultClient, err := vault.NewClient()
+	if err != nil {
+		log.Warn().Err(err).Msg("Failed to initialize Vault client, falling back to environment variables")
+	}
+
+	// Get configuration from Vault if available, otherwise use environment variables
+	var (
+		appID          string
+		installationID string
+		privateKeyPath string
+		apiBaseURL     string
+		serverPort     string
+		workerCount    string
+		retentionHours string
+		tempPatterns   string
+		rateLimit      string
+	)
+
+	if vaultClient != nil {
+		// Try to get GitHub configuration from Vault
+		if githubConfig, err := vaultClient.GetSecret("ansible/github"); err == nil {
+			appID = fmt.Sprint(githubConfig["app_id"])
+			installationID = fmt.Sprint(githubConfig["installation_id"])
+			privateKeyPath = fmt.Sprint(githubConfig["private_key_path"])
+		}
+
+		// Try to get API configuration from Vault
+		if apiConfig, err := vaultClient.GetSecret("ansible/api"); err == nil {
+			serverPort = fmt.Sprint(apiConfig["port"])
+			workerCount = fmt.Sprint(apiConfig["worker_count"])
+			retentionHours = fmt.Sprint(apiConfig["retention_hours"])
+		}
+	}
+
+	// Fall back to environment variables if Vault is not available or secrets not found
+	if appID == "" {
+		appID = os.Getenv("GITHUB_APP_ID")
+	}
+	if installationID == "" {
+		installationID = os.Getenv("GITHUB_INSTALLATION_ID")
+	}
+	if privateKeyPath == "" {
+		privateKeyPath = os.Getenv("GITHUB_PRIVATE_KEY_PATH")
+	}
+	if apiBaseURL == "" {
+		apiBaseURL = os.Getenv("GITHUB_API_BASE_URL")
+	}
+	if serverPort == "" {
+		serverPort = os.Getenv("PORT")
+	}
+	if workerCount == "" {
+		workerCount = os.Getenv("WORKER_COUNT")
+	}
+	if retentionHours == "" {
+		retentionHours = os.Getenv("RETENTION_HOURS")
+	}
+	if tempPatterns == "" {
+		tempPatterns = os.Getenv("TEMP_PATTERNS")
+	}
+	if rateLimit == "" {
+		rateLimit = os.Getenv("RATE_LIMIT_REQUESTS_PER_SECOND")
+	}
 
 	// Convert string values to integers
 	appIDInt, _ := strconv.Atoi(appID)
@@ -77,7 +131,7 @@ func New() (*Server, error) {
 	retentionHoursInt, _ := strconv.Atoi(retentionHours)
 	rateLimitInt, _ := strconv.Atoi(rateLimit)
 
-	// Set defaults if environment variables are not set
+	// Set defaults if values are not set
 	if serverPort == "" {
 		serverPort = "8080"
 	}
@@ -97,28 +151,6 @@ func New() (*Server, error) {
 		apiBaseURL = "https://api.github.com"
 	}
 
-	// Only try to load config.cfg if required environment variables are missing
-	if appID == "" || installationID == "" || privateKeyPath == "" {
-		cfg, err := ini.Load("config.cfg")
-		if err != nil {
-			log.Warn().Err(err).Msg("Failed to load config.cfg, using environment variables only")
-		} else {
-			// Only use config values if environment variables are not set
-			if appID == "" {
-				appIDInt, _ = cfg.Section("githubapp").Key("app_id").Int()
-			}
-			if installationID == "" {
-				installationIDInt, _ = cfg.Section("githubapp").Key("installation_id").Int()
-			}
-			if privateKeyPath == "" {
-				privateKeyPath = cfg.Section("githubapp").Key("private_key_path").String()
-			}
-			if apiBaseURL == "" {
-				apiBaseURL = cfg.Section("githubapp").Key("api_base_url").String()
-			}
-		}
-	}
-
 	s := &Server{
 		Mux:                  http.NewServeMux(),
 		Logger:               log.With().Str("component", "server").Logger(),
@@ -129,6 +161,7 @@ func New() (*Server, error) {
 		GithubInstallationID: installationIDInt,
 		GithubPrivateKeyPath: privateKeyPath,
 		GithubAPIBaseURL:     apiBaseURL,
+		VaultClient:          vaultClient,
 	}
 
 	s.registerRoutes()
