@@ -10,6 +10,7 @@ import (
 	"os/exec"
 	"path/filepath"
 	"regexp"
+	"strconv"
 	"strings"
 	"sync"
 	"time"
@@ -63,10 +64,30 @@ func New() (*Server, error) {
 		log.Fatal().Err(err).Msg("Failed to load config.cfg")
 	}
 
-	appID, _ := cfg.Section("githubapp").Key("app_id").Int()
-	installationID, _ := cfg.Section("githubapp").Key("installation_id").Int()
-	privateKeyPath := cfg.Section("githubapp").Key("private_key_path").String()
-	apiBaseURL := cfg.Section("githubapp").Key("api_base_url").String()
+	// Get GitHub App configuration from environment variables
+	appID := os.Getenv("GITHUB_APP_ID")
+	installationID := os.Getenv("GITHUB_INSTALLATION_ID")
+	privateKeyPath := os.Getenv("GITHUB_PRIVATE_KEY_PATH")
+	apiBaseURL := os.Getenv("GITHUB_API_BASE_URL")
+
+	// Convert string values to integers
+	appIDInt, _ := strconv.Atoi(appID)
+	installationIDInt, _ := strconv.Atoi(installationID)
+
+	// If environment variables are not set, try to get from config file
+	if appID == "" {
+		appIDInt, _ = cfg.Section("githubapp").Key("app_id").Int()
+	}
+	if installationID == "" {
+		installationIDInt, _ = cfg.Section("githubapp").Key("installation_id").Int()
+	}
+	if privateKeyPath == "" {
+		privateKeyPath = cfg.Section("githubapp").Key("private_key_path").String()
+	}
+	if apiBaseURL == "" {
+		apiBaseURL = cfg.Section("githubapp").Key("api_base_url").String()
+	}
+
 	serverPort := cfg.Section("server").Key("port").MustString("8080") //default port
 
 	s := &Server{
@@ -75,8 +96,8 @@ func New() (*Server, error) {
 		Jobs:                 make(map[string]*servicemodel.Job),
 		JobQueue:             make(chan *servicemodel.Job, 100),
 		RateLimiter:          rate.NewLimiter(rate.Every(time.Second), 10),
-		GithubAppID:          appID,
-		GithubInstallationID: installationID,
+		GithubAppID:          appIDInt,
+		GithubInstallationID: installationIDInt,
 		GithubPrivateKeyPath: privateKeyPath,
 		GithubAPIBaseURL:     apiBaseURL,
 	}

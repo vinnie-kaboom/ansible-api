@@ -11,7 +11,7 @@ A modern Go-based API service to run Ansible playbooks remotely. This service al
 - Configurable worker pool and rate limiting
 - Structured logging with zerolog
 - Health check and job management endpoints
-- Configuration via `config.cfg`
+- Configuration via environment variables or `config.cfg`
 
 ## Prerequisites
 
@@ -32,7 +32,30 @@ go build -o ansible-api ./cmd/service
 
 ## Configuration
 
-Create a `config.cfg` file in the project root. Example:
+You can configure the application using either environment variables or a `config.cfg` file. Environment variables take precedence over the config file.
+
+### Environment Variables
+
+Copy the example environment file and update the values:
+
+```bash
+cp .env.example .env
+```
+
+Required environment variables:
+- `GITHUB_APP_ID`: Your GitHub App ID
+- `GITHUB_INSTALLATION_ID`: Your GitHub App Installation ID
+- `GITHUB_PRIVATE_KEY_PATH`: Path to your GitHub App private key
+- `GITHUB_API_BASE_URL`: GitHub API base URL (default: https://api.github.com)
+
+Optional environment variables:
+- `PORT`: Server port (default: 8080)
+- `WORKER_COUNT`: Number of worker goroutines (default: 4)
+- `RETENTION_HOURS`: Hours to retain temporary files (default: 24)
+
+### Config File
+
+Alternatively, create a `config.cfg` file in the project root:
 
 ```ini
 [server]
@@ -47,17 +70,20 @@ temp_patterns = *_site.yml, *_hosts
 requests_per_second = 10
 
 [githubapp]
-app_id = <your_github_app_id>
-installation_id = <your_installation_id>
-private_key_path = C:/path/to/your/private-key.pem
+app_id = your_app_id
+installation_id = your_installation_id
+private_key_path = /path/to/your/private-key.pem
 api_base_url = https://api.github.com
 ```
-
-- For GitHub App integration, generate a private key in your GitHub App settings and set the correct App and Installation IDs.
 
 ## Running the Server
 
 ```bash
+# Using environment variables
+source .env
+./ansible-api
+
+# Or using config file
 ./ansible-api
 ```
 
@@ -124,33 +150,20 @@ curl -X POST http://localhost:8080/api/jobs/<job_id>/retry
 curl -X POST http://localhost:8080/api/jobs/<job_id>/cancel
 ```
 
-## Example config.cfg
+## Security
 
-```ini
-[server]
-port = 8080
-worker_count = 4
-
-[githubapp]
-app_id = 12345
-installation_id = 67890
-private_key_path = C:/Users/youruser/Downloads/github-app.pem
-api_base_url = https://api.github.com
-```
-
-## Notes
-
-- All configuration is loaded from `config.cfg`.
-- The server logs to stdout in structured format.
-- Jobs are processed asynchronously; use the job endpoints to track status.
-- For private GitHub repos, configure the GitHub App section and use HTTPS URLs.
-- No shell scripts or Python dashboard are required or supported in this Go version.
+- GitHub App credentials are stored securely using environment variables
+- Private keys are never committed to version control
+- API endpoints are rate-limited
+- Temporary files are automatically cleaned up
+- All sensitive data is encrypted at rest
 
 ## Troubleshooting
 
-- Ensure Ansible and Git are installed and in your PATH.
-- Check the logs for errors related to config, authentication, or playbook execution.
-- For GitHub App issues, verify your App ID, Installation ID, and PEM file.
+- Ensure all required environment variables are set
+- Check the logs for authentication errors
+- Verify GitHub App permissions and installation
+- Ensure Ansible and Git are in your PATH
 
 ## License
 
