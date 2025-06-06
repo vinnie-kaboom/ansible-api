@@ -1,0 +1,57 @@
+name: Run Ansible Playbook
+
+on:
+  push:
+    branches: [ main ]
+  pull_request:
+    branches: [ main ]
+  workflow_dispatch:  # Allows manual triggering
+
+jobs:
+  run-playbook:
+    runs-on: ubuntu-latest
+    
+    steps:
+    - name: Checkout repository
+      uses: actions/checkout@v4
+
+    - name: Set up Go
+      uses: actions/setup-go@v5
+      with:
+        go-version: '1.22'
+
+    - name: Build and start API server
+      run: |
+        cd /home/runner/work/ansible-api
+        go build -o ansible-api cmd/service/main.go
+        ./ansible-api &
+        sleep 5  # Give the server time to start
+
+    - name: Run playbook
+      run: |
+        curl -X POST http://localhost:8080/api/playbook/run \
+          -H "Content-Type: application/json" \
+          -d '{
+            "repository_url": "https://github.com/vinnie-kaboom/ansible-repo.git",
+            "playbook_path": "playbooks/site.yml",
+            "inventory": {
+              "webservers": {
+                "ansible_host": "localhost"
+              }
+            },
+            "environment": {
+              "ANSIBLE_HOST_KEY_CHECKING": "False"
+            }
+          }'
+
+    - name: Check job status
+      run: |
+        # Wait for job to complete
+        sleep 10
+        # Get the job status
+        curl http://localhost:8080/api/jobs
+
+    - name: Cleanup
+      if: always()
+      run: |
+        pkill ansible-api || true 
