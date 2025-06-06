@@ -12,21 +12,6 @@ jobs:
     runs-on: ubuntu-latest
     
     steps:
-    - name: Checkout repository
-      uses: actions/checkout@v4
-
-    - name: Set up Go
-      uses: actions/setup-go@v5
-      with:
-        go-version: '1.22'
-
-    - name: Build and start API server
-      run: |
-        cd /home/runner/work/ansible-api
-        go build -o ansible-api cmd/service/main.go
-        ./ansible-api &
-        sleep 5  # Give the server time to start
-
     - name: Run playbook
       run: |
         curl -X POST http://localhost:8080/api/playbook/run \
@@ -49,9 +34,4 @@ jobs:
         # Wait for job to complete
         sleep 10
         # Get the job status
-        curl http://localhost:8080/api/jobs
-
-    - name: Cleanup
-      if: always()
-      run: |
-        pkill ansible-api || true 
+        curl http://localhost:8080/api/jobs 
