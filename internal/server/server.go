@@ -59,43 +59,72 @@ func New() (*Server, error) {
 	zerolog.TimeFieldFormat = time.RFC3339
 	log.Logger = log.Output(zerolog.ConsoleWriter{Out: os.Stdout, TimeFormat: time.RFC3339})
 
-	cfg, err := ini.Load("config.cfg")
-	if err != nil {
-		log.Fatal().Err(err).Msg("Failed to load config.cfg")
-	}
-
-	// Get GitHub App configuration from environment variables
+	// Get configuration from environment variables first
 	appID := os.Getenv("GITHUB_APP_ID")
 	installationID := os.Getenv("GITHUB_INSTALLATION_ID")
 	privateKeyPath := os.Getenv("GITHUB_PRIVATE_KEY_PATH")
 	apiBaseURL := os.Getenv("GITHUB_API_BASE_URL")
+	serverPort := os.Getenv("PORT")
+	workerCount := os.Getenv("WORKER_COUNT")
+	retentionHours := os.Getenv("RETENTION_HOURS")
+	tempPatterns := os.Getenv("TEMP_PATTERNS")
+	rateLimit := os.Getenv("RATE_LIMIT_REQUESTS_PER_SECOND")
 
 	// Convert string values to integers
 	appIDInt, _ := strconv.Atoi(appID)
 	installationIDInt, _ := strconv.Atoi(installationID)
+	workerCountInt, _ := strconv.Atoi(workerCount)
+	retentionHoursInt, _ := strconv.Atoi(retentionHours)
+	rateLimitInt, _ := strconv.Atoi(rateLimit)
 
-	// If environment variables are not set, try to get from config file
-	if appID == "" {
-		appIDInt, _ = cfg.Section("githubapp").Key("app_id").Int()
+	// Set defaults if environment variables are not set
+	if serverPort == "" {
+		serverPort = "8080"
 	}
-	if installationID == "" {
-		installationIDInt, _ = cfg.Section("githubapp").Key("installation_id").Int()
+	if workerCountInt == 0 {
+		workerCountInt = 4
 	}
-	if privateKeyPath == "" {
-		privateKeyPath = cfg.Section("githubapp").Key("private_key_path").String()
+	if retentionHoursInt == 0 {
+		retentionHoursInt = 24
+	}
+	if rateLimitInt == 0 {
+		rateLimitInt = 10
+	}
+	if tempPatterns == "" {
+		tempPatterns = "*_site.yml,*_hosts"
 	}
 	if apiBaseURL == "" {
-		apiBaseURL = cfg.Section("githubapp").Key("api_base_url").String()
+		apiBaseURL = "https://api.github.com"
 	}
 
-	serverPort := cfg.Section("server").Key("port").MustString("8080") //default port
+	// Only try to load config.cfg if required environment variables are missing
+	if appID == "" || installationID == "" || privateKeyPath == "" {
+		cfg, err := ini.Load("config.cfg")
+		if err != nil {
+			log.Warn().Err(err).Msg("Failed to load config.cfg, using environment variables only")
+		} else {
+			// Only use config values if environment variables are not set
+			if appID == "" {
+				appIDInt, _ = cfg.Section("githubapp").Key("app_id").Int()
+			}
+			if installationID == "" {
+				installationIDInt, _ = cfg.Section("githubapp").Key("installation_id").Int()
+			}
+			if privateKeyPath == "" {
+				privateKeyPath = cfg.Section("githubapp").Key("private_key_path").String()
+			}
+			if apiBaseURL == "" {
+				apiBaseURL = cfg.Section("githubapp").Key("api_base_url").String()
+			}
+		}
+	}
 
 	s := &Server{
 		Mux:                  http.NewServeMux(),
 		Logger:               log.With().Str("component", "server").Logger(),
 		Jobs:                 make(map[string]*servicemodel.Job),
 		JobQueue:             make(chan *servicemodel.Job, 100),
-		RateLimiter:          rate.NewLimiter(rate.Every(time.Second), 10),
+		RateLimiter:          rate.NewLimiter(rate.Every(time.Second), rateLimitInt),
 		GithubAppID:          appIDInt,
 		GithubInstallationID: installationIDInt,
 		GithubPrivateKeyPath: privateKeyPath,
