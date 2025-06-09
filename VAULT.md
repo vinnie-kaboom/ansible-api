@@ -1,19 +1,29 @@
 # Vault Setup and Usage Guide
 
 ## Table of Contents
-1. [Installation](#installation)
-2. [Initial Setup](#initial-setup)
-3. [Configuration](#configuration)
-4. [Starting Vault](#starting-vault)
-5. [Initializing Vault](#initializing-vault)
-6. [Unsealing Vault](#unsealing-vault)
-7. [Storing Secrets](#storing-secrets)
-8. [Retrieving Secrets](#retrieving-secrets)
-9. [Troubleshooting](#troubleshooting)
-10. [Environment Variables](#environment-variables)
-11. [Role-Based Access Control (RBAC)](#role-based-access-control-rbac)
-12. [Backup and Restore](#backup-and-restore)
-13. [Monitoring and Logging](#monitoring-and-logging)
+- [Vault Setup and Usage Guide](#vault-setup-and-usage-guide)
+  - [Table of Contents](#table-of-contents)
+  - [Installation](#installation)
+  - [Initial Setup](#initial-setup)
+  - [Configuration](#configuration)
+  - [Starting Vault](#starting-vault)
+  - [Initializing Vault](#initializing-vault)
+  - [Unsealing Vault](#unsealing-vault)
+  - [Storing Secrets](#storing-secrets)
+  - [Retrieving Secrets](#retrieving-secrets)
+  - [Environment Variables](#environment-variables)
+  - [Role-Based Access Control (RBAC)](#role-based-access-control-rbac)
+  - [Backup and Restore](#backup-and-restore)
+  - [Monitoring and Logging](#monitoring-and-logging)
+  - [Troubleshooting](#troubleshooting)
+    - [Common Issues](#common-issues)
+    - [Useful Commands](#useful-commands)
+    - [Security Best Practices](#security-best-practices)
+    - [Vault Service Fails to Start: Permission Denied](#vault-service-fails-to-start-permission-denied)
+      - [**Checklist to Resolve:**](#checklist-to-resolve)
+      - [Vault Fails to Initialize with 'read-only file system' Error](#vault-fails-to-initialize-with-read-only-file-system-error)
+      - [403 Error or 'permission denied' When Accessing kv/\* Paths](#403-error-or-permission-denied-when-accessing-kv-paths)
+  - [Additional Resources](#additional-resources)
 
 ## Installation
 
@@ -115,6 +125,7 @@ RestartSec=5
 TimeoutStopSec=30
 StartLimitBurst=3
 LimitNOFILE=65536
+ReadWritePaths=/etc/vault.d
 
 [Install]
 WantedBy=multi-user.target
@@ -462,6 +473,130 @@ vault status | grep Sealed
 10. Monitor Vault metrics and logs
 11. Implement secret rotation policies
 12. Use Vault Agent for automatic authentication
+
+### Vault Service Fails to Start: Permission Denied
+
+If you see errors like:
+```
+vault.service: Failed to locate executable /usr/local/bin/vault: Permission denied
+vault.service: Failed at step EXEC spawning /usr/local/bin/vault: Permission denied
+vault.service: Main process exited, code=exited, status=203/EXEC
+```
+
+#### **Checklist to Resolve:**
+
+1. **Check File Permissions**
+   ```sh
+   ls -l /usr/local/bin/vault
+   ```
+   Should be:
+   ```
+   -rwxr-xr-x 1 root root ... /usr/local/bin/vault
+   ```
+   If not, fix with:
+   ```sh
+   sudo chmod 755 /usr/local/bin/vault
+   sudo chown root:root /usr/local/bin/vault
+   ```
+
+2. **Check SELinux Status**
+   ```sh
+   getenforce
+   ```
+   If it returns `Enforcing`, SELinux may be blocking execution.  
+   Temporarily set to permissive to test:
+   ```sh
+   sudo setenforce 0
+   sudo systemctl restart vault
+   sudo systemctl status vault
+   ```
+   If Vault starts, restore the correct context:
+   ```sh
+   sudo restorecon -v /usr/local/bin/vault
+   sudo setenforce 1
+   ```
+   If you need to keep SELinux permissive (not recommended for production), set `SELINUX=permissive` in `/etc/selinux/config`.
+
+3. **Check Filesystem Mount Options**
+   ```sh
+   mount | grep /usr/local
+   ```
+   If you see `noexec`, move the binary to `/usr/bin` and update your service file.
+
+4. **Test as the Vault User**
+   ```sh
+   sudo -u vault /usr/local/bin/vault --version
+   ```
+   If you see "Permission denied", the problem is with user execution rights or SELinux.
+
+5. **Check for Extended Attributes**
+   ```sh
+   lsattr /usr/local/bin/vault
+   ```
+   Remove any unusual attributes if present.
+
+#### Vault Fails to Initialize with 'read-only file system' Error
+
+If you see an error like:
+```
+failed to initialize barrier: failed to persist keyring: mkdir /etc/vault.d/data/core: read-only file system
+```
+when running Vault as a service, and your systemd service file contains `ProtectSystem=full`, this means Vault does not have write access to `/etc/vault.d` due to systemd's filesystem protection.
+
+**Solution:**
+1. Edit your `/etc/systemd/system/vault.service` file.
+2. In the `[Service]` section, add:
+   ```
+   ReadWritePaths=/etc/vault.d
+   ```
+   so it looks like:
+   ```ini
+   [Service]
+   User=vault
+   Group=vault
+   ProtectSystem=full
+   ReadWritePaths=/etc/vault.d
+   ...
+   ```
+3. Save and exit the editor.
+4. Reload systemd and restart Vault:
+   ```sh
+   sudo systemctl daemon-reload
+   sudo systemctl restart vault
+   sudo systemctl status vault
+   ```
+
+This will allow Vault to write to `/etc/vault.d` while keeping the rest of the system protected.
+
+#### 403 Error or 'permission denied' When Accessing kv/* Paths
+
+If you see errors like:
+```
+Error making API request.
+
+URL: GET http://127.0.0.1:8200/v1/sys/internal/ui/mounts/kv/ansible/api
+Code: 403. Errors:
+
+* preflight capability check returned 403, please ensure client's policies grant access to path "kv/ansible/api/"
+```
+or
+```
+* permission denied
+```
+and running `vault secrets list` does **not** show a `kv/` path, it means the KV secrets engine is not enabled at the expected path.
+
+**Solution:**
+1. Enable the KV secrets engine at the `kv/` path:
+   ```sh
+   vault secrets enable -version=2 -path=kv kv
+   ```
+   You should see:
+   ```
+   Success! Enabled the kv secrets engine at: kv/
+   ```
+2. Retry your command (e.g., `vault kv put kv/ansible/api ...`).
+
+This will allow you to store and retrieve secrets at the `kv/` path as expected.
 
 ## Additional Resources
 
