@@ -1,0 +1,40 @@
+name: Run Ansible Playbook
+
+on:
+  push:
+    branches: [ main ]
+  pull_request:
+    branches: [ main ]
+  workflow_dispatch:  # Allows manual triggering
+
+env:
+  API_URL: ${{ secrets.API_URL }}  # Add this to your repository secrets
+
+jobs:
+  run-playbook:
+    runs-on: ubuntu-latest
+    
+    steps:
+    - name: Run playbook
+      run: |
+        curl -X POST ${{ env.API_URL }}/api/playbook/run \
+          -H "Content-Type: application/json" \
+          -d '{
+            "repository_url": "https://github.com/vinnie-kaboom/ansible-repo.git",
+            "playbook_path": "playbooks/site.yml",
+            "inventory": {
+              "webservers": {
+                "ansible_host": "localhost"
+              }
+            },
+            "environment": {
+              "ANSIBLE_HOST_KEY_CHECKING": "False"
+            }
+          }'
+
+    - name: Check job status
+      run: |
+        # Wait for job to complete
+        sleep 10
+        # Get the job status
+        curl ${{ env.API_URL }}/api/jobs 
