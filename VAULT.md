@@ -108,6 +108,7 @@ ConditionFileNotEmpty=/etc/vault.d/vault.hcl
 User=vault
 Group=vault
 ProtectSystem=full
+ReadWritePaths=/etc/vault.d
 ProtectHome=read-only
 PrivateTmp=yes
 PrivateDevices=yes
@@ -121,11 +122,6 @@ ExecReload=/bin/kill --signal HUP $MAINPID
 KillMode=process
 KillSignal=SIGINT
 Restart=on-failure
-RestartSec=5
-TimeoutStopSec=30
-StartLimitBurst=3
-LimitNOFILE=65536
-ReadWritePaths=/etc/vault.d
 
 [Install]
 WantedBy=multi-user.target
