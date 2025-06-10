@@ -5,10 +5,7 @@ import (
 	"encoding/json"
 	"fmt"
 	"net/http"
-	"net/url"
 	"os"
-	"os/exec"
-	"path/filepath"
 	"regexp"
 	"strconv"
 	"strings"
@@ -16,14 +13,12 @@ import (
 	"time"
 
 	servicemodel "ansible-api/datamodel/service-model"
-	"ansible-api/internal/githubapp"
 	"ansible-api/internal/vault"
 
 	"github.com/go-playground/validator/v10"
 	"github.com/rs/zerolog"
 	"github.com/rs/zerolog/log"
 	"golang.org/x/time/rate"
-	"gopkg.in/src-d/go-git.v4"
 )
 
 var httpsGitRegex = regexp.MustCompile(`^https://[\w.@:/\-~]+\.git$`)
@@ -224,6 +219,7 @@ type Server struct {
 	GithubPrivateKeyPath string
 	GithubAPIBaseURL     string
 	VaultClient          *vault.Client
+	jobProcessor         *JobProcessor
 }
 
 func New() (*Server, error) {
@@ -258,6 +254,7 @@ func New() (*Server, error) {
 		VaultClient:          vaultClient,
 	}
 
+	s.jobProcessor = NewJobProcessor(s)
 	s.registerRoutes()
 
 	s.Server = &http.Server{
@@ -265,7 +262,7 @@ func New() (*Server, error) {
 		Handler: s.Mux,
 	}
 
-	go s.processJobs()
+	go s.jobProcessor.ProcessJobs()
 
 	return s, nil
 }
@@ -446,112 +443,6 @@ func (s *Server) handleJobRetry(jobID string, w http.ResponseWriter) {
 	}
 }
 
-func (s *Server) processJobs() {
-	for job := range s.JobQueue {
-		s.JobMutex.Lock()
-		job.Status = "running"
-		s.JobMutex.Unlock()
-
-		tmpDir, err := os.MkdirTemp("", "repo")
-		if err != nil {
-			s.updateJobStatus(job, "failed", "", err.Error())
-			continue
-		}
-
-		s.Logger.Info().Msg("Attempting to authenticate with GitHub")
-
-		token, err := (&githubapp.DefaultAuthenticator{}).GetInstallationToken(githubapp.AuthConfig{
-			AppID:          s.GithubAppID,
-			InstallationID: s.GithubInstallationID,
-			PrivateKeyPath: s.GithubPrivateKeyPath,
-			APIBaseURL:     s.GithubAPIBaseURL,
-		})
-		if err != nil {
-			s.Logger.Error().Err(err).Msg("Failed to authenticate with GitHub")
-			s.updateJobStatus(job, "failed", "", "GitHub App authentication failed: "+err.Error())
-			err := os.RemoveAll(tmpDir)
-			if err != nil {
-				s.Logger.Error().Err(err).Msg("Failed to remove temporary directory")
-				return
-			}
-			continue
-		}
-
-		repoPath := extractRepoPath(job.RepositoryURL)
-		host := extractHost(job.RepositoryURL)
-		cloneURL := githubapp.BuildCloneURL(token, repoPath, host)
-
-		maskedCloneURL := maskTokenInURL(cloneURL)
-		s.Logger.Info().Str("clone_url", maskedCloneURL).Msg("Cloning repository")
-
-		_, err = git.PlainClone(tmpDir, false, &git.CloneOptions{
-			URL:      cloneURL,
-			Progress: os.Stdout,
-		})
-		if err != nil {
-			s.updateJobStatus(job, "failed", "", err.Error())
-			err := os.RemoveAll(tmpDir)
-			if err != nil {
-				s.Logger.Error().Err(err).Msg("Failed to remove temporary directory")
-				return
-			}
-			continue
-		}
-
-		inventoryFilePath := filepath.Join(tmpDir, "inventory.ini")
-		inventoryFile, err := os.Create(inventoryFilePath)
-		if err != nil {
-			s.updateJobStatus(job, "failed", "", err.Error())
-			err := os.RemoveAll(tmpDir)
-			if err != nil {
-				s.Logger.Error().Err(err).Msg("Failed to remove temporary directory")
-				return
-			}
-			continue
-		}
-
-		playbookPath := filepath.Join(tmpDir, job.PlaybookPath)
-		ansibleCmd := exec.Command("ansible-playbook", playbookPath, "-i", inventoryFilePath)
-		ansibleCmd.Dir = tmpDir
-		if output, err := ansibleCmd.CombinedOutput(); err != nil {
-			s.updateJobStatus(job, "failed", string(output), err.Error())
-			err := inventoryFile.Close()
-			if err != nil {
-				s.Logger.Error().Err(err).Msg("Failed to close inventory file")
-				return
-			}
-			err = os.RemoveAll(tmpDir)
-			if err != nil {
-				s.Logger.Error().Err(err).Msg("Failed to remove temporary directory")
-				return
-			}
-			continue
-		}
-
-		s.updateJobStatus(job, "completed", "", "")
-		err = inventoryFile.Close()
-		if err != nil {
-			s.Logger.Error().Err(err).Msg("Failed to close inventory file")
-			return
-		}
-		err = os.RemoveAll(tmpDir)
-		if err != nil {
-			s.Logger.Error().Err(err).Msg("Failed to remove temporary directory")
-			return
-		}
-	}
-}
-
-func (s *Server) updateJobStatus(job *servicemodel.Job, status, output, errMsg string) {
-	s.JobMutex.Lock()
-	defer s.JobMutex.Unlock()
-
-	job.Status = status
-	job.Output = output
-	job.Error = errMsg
-	job.EndTime = time.Now()
-}
-
 func (s *Server) Start() error {
 	s.Logger.Info().Str("addr", s.Server.Addr).Msg("Starting server")
 	return s.Server.ListenAndServe()
@@ -565,34 +456,4 @@ func (s *Server) Stop() error {
 		return s.Server.Shutdown(ctx)
 	}
 	return nil
-}
-
-func extractRepoPath(fullURL string) string {
-	u, err := url.Parse(fullURL)
-	if err != nil {
-		return fullURL // fallback
-	}
-	return u.Path[1:] // remove leading slash
-}
-
-func maskTokenInURL(cloneURL string) string {
-	u, err := url.Parse(cloneURL)
-	if err != nil || u.User == nil {
-		return cloneURL
-	}
-	username := u.User.Username()
-	if _, hasToken := u.User.Password(); hasToken {
-		u.User = url.UserPassword(username, "****")
-		return u.String()
-	}
-	return cloneURL
-}
-
-// extractHost extracts the host from a repository URL
-func extractHost(repoURL string) string {
-	u, err := url.Parse(repoURL)
-	if err != nil {
-		return "github.com" // fallback to github.com if parsing fails
-	}
-	return u.Host
 }
