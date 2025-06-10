@@ -2,19 +2,20 @@ package ansible
 
 import (
 	"fmt"
+	"github.com/rs/zerolog/log"
 	"os"
 
 	"ansible-api/internal/vault"
 )
 
-// AnsibleClient represents an Ansible client
-type AnsibleClient struct {
+// Client represents an Ansible client
+type Client struct {
 	SSHKeyPath string
 }
 
-// NewAnsibleClient creates a new Ansible client
-func NewAnsibleClient(vaultClient *vault.Client) (*AnsibleClient, error) {
-	// Get SSH key from Vault
+// NewClient creates a new Ansible client
+func NewClient(vaultClient *vault.Client) (*Client, error) {
+	// Get an SSH key from Vault
 	sshKey, err := vaultClient.GetSSHKey()
 	if err != nil {
 		return nil, fmt.Errorf("failed to get SSH key from Vault: %v", err)
@@ -26,26 +27,41 @@ func NewAnsibleClient(vaultClient *vault.Client) (*AnsibleClient, error) {
 		return nil, fmt.Errorf("failed to create temporary file: %v", err)
 	}
 
-	// Write SSH key to temporary file
+	// Write an SSH key to a temporary file
 	if _, err := tmpFile.WriteString(sshKey); err != nil {
-		tmpFile.Close()
-		os.Remove(tmpFile.Name())
+		err := tmpFile.Close()
+		if err != nil {
+			log.Error().Err(err).Msg("failed to close temporary file after write error")
+			return nil, err
+		}
+		err := os.Remove(tmpFile.Name())
+		if err != nil {
+			log.Error().Err(err).Msg("failed to remove temporary file after write error")
+			return nil, err
+		}
 		return nil, fmt.Errorf("failed to write SSH key to temporary file: %v", err)
 	}
 
 	// Close the file
 	if err := tmpFile.Close(); err != nil {
-		os.Remove(tmpFile.Name())
+		if removeErr := os.Remove(tmpFile.Name()); removeErr != nil {
+			log.Error().Err(removeErr).Msg("failed to remove temporary file after close error")
+			return nil, fmt.Errorf("failed to close and remove temporary file: %v (remove error: %v)", err, removeErr)
+		}
 		return nil, fmt.Errorf("failed to close temporary file: %v", err)
 	}
 
 	// Set correct permissions
 	if err := os.Chmod(tmpFile.Name(), 0600); err != nil {
-		os.Remove(tmpFile.Name())
+		err := os.Remove(tmpFile.Name())
+		if err != nil {
+			log.Error().Err(err).Msg("failed to remove temporary file after chmod error")
+			return nil, err
+		}
 		return nil, fmt.Errorf("failed to set permissions on temporary file: %v", err)
 	}
 
-	return &AnsibleClient{
+	return &Client{
 		SSHKeyPath: tmpFile.Name(),
 	}, nil
 }

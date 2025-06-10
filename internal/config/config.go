@@ -65,6 +65,3 @@ func getBaseDir() string {
 	}
 	return filepath.Join(home, ansibleFolderName, playbooksFolderName)
 }
-
-// DefaultConfig provides a default configuration instance
-//var DefaultConfig = New()
