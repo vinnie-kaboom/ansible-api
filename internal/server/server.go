@@ -478,7 +478,8 @@ func (s *Server) processJobs() {
 		}
 
 		repoPath := extractRepoPath(job.RepositoryURL)
-		cloneURL := githubapp.BuildCloneURL(token, repoPath, "github.com")
+		host := extractHost(job.RepositoryURL)
+		cloneURL := githubapp.BuildCloneURL(token, repoPath, host)
 
 		maskedCloneURL := maskTokenInURL(cloneURL)
 		s.Logger.Info().Str("clone_url", maskedCloneURL).Msg("Cloning repository")
@@ -585,4 +586,13 @@ func maskTokenInURL(cloneURL string) string {
 		return u.String()
 	}
 	return cloneURL
+}
+
+// extractHost extracts the host from a repository URL
+func extractHost(repoURL string) string {
+	u, err := url.Parse(repoURL)
+	if err != nil {
+		return "github.com" // fallback to github.com if parsing fails
+	}
+	return u.Host
 }

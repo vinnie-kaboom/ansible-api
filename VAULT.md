@@ -680,6 +680,7 @@ and running `vault secrets list` does **not** show a `kv/` path, it means the KV
    ```text
    Success! Enabled the kv secrets engine at: kv/
    ```
+
 2. Retry your command (e.g., `vault kv put kv/ansible/api ...`).
 
 This will allow you to store and retrieve secrets at the `kv/` path as expected.

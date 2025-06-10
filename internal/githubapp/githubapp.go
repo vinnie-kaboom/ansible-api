@@ -4,6 +4,7 @@ import (
 	"context"
 	"encoding/pem"
 	"fmt"
+	"net/url"
 	"os"
 	"time"
 
@@ -93,10 +94,14 @@ func exchangeJWTForToken(jwtToken string, installationID int, apiBaseURL string)
 	var err error
 
 	if apiBaseURL != "" && apiBaseURL != defaultAPIBaseURL {
-		client, err = github.NewEnterpriseClient(apiBaseURL, apiBaseURL, tc)
+		// Create a new client with custom base URL
+		client = github.NewClient(tc)
+		client.BaseURL, err = url.Parse(apiBaseURL)
 		if err != nil {
-			return "", &AuthError{Op: "create_enterprise_client", Err: err}
+			return "", &AuthError{Op: "parse_api_url", Err: err}
 		}
+		// Set the upload URL to the same base URL
+		client.UploadURL = client.BaseURL
 	} else {
 		client = github.NewClient(tc)
 	}
