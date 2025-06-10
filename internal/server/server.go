@@ -41,6 +41,176 @@ type PlaybookRequest struct {
 	Secrets       map[string]string            `json:"secrets"`
 }
 
+type Config struct {
+	AppID          int
+	InstallationID int
+	PrivateKeyPath string
+	APIBaseURL     string
+	ServerPort     string
+	WorkerCount    int
+	RetentionHours int
+	TempPatterns   string
+	RateLimit      int
+}
+
+func (c *Config) setIntValue(key string, value interface{}) {
+	if str, ok := value.(string); ok {
+		if intVal, err := strconv.Atoi(str); err == nil {
+			switch key {
+			case "app_id":
+				c.AppID = intVal
+			case "installation_id":
+				c.InstallationID = intVal
+			case "worker_count":
+				c.WorkerCount = intVal
+			case "retention_hours":
+				c.RetentionHours = intVal
+			case "rate_limit":
+				c.RateLimit = intVal
+			}
+		}
+	}
+}
+
+func (c *Config) setStringValue(key string, value interface{}) {
+	if str, ok := value.(string); ok {
+		switch key {
+		case "private_key_path":
+			c.PrivateKeyPath = str
+		case "api_base_url":
+			c.APIBaseURL = str
+		case "port":
+			c.ServerPort = str
+		case "temp_patterns":
+			c.TempPatterns = str
+		}
+	}
+}
+
+func loadConfigFromVault(vaultClient *vault.Client) (*Config, error) {
+	config := &Config{}
+
+	if vaultClient == nil {
+		return config, nil
+	}
+
+	// Load GitHub configuration
+	if githubConfig, err := vaultClient.GetSecret("ansible/github"); err == nil {
+		for key, value := range githubConfig {
+			config.setIntValue(key, value)
+			config.setStringValue(key, value)
+		}
+	} else {
+		log.Info().Msg("GitHub configuration not found in Vault, will use environment variables")
+	}
+
+	// Load API configuration
+	if apiConfig, err := vaultClient.GetSecret("ansible/api"); err == nil {
+		for key, value := range apiConfig {
+			config.setIntValue(key, value)
+			config.setStringValue(key, value)
+		}
+	} else {
+		log.Info().Msg("API configuration not found in Vault, will use environment variables")
+	}
+
+	return config, nil
+}
+
+func loadConfigFromEnv(config *Config) {
+	envMap := map[string]string{
+		"GITHUB_APP_ID":                  "",
+		"GITHUB_INSTALLATION_ID":         "",
+		"GITHUB_PRIVATE_KEY_PATH":        "",
+		"GITHUB_API_BASE_URL":            "",
+		"PORT":                           "",
+		"WORKER_COUNT":                   "",
+		"RETENTION_HOURS":                "",
+		"TEMP_PATTERNS":                  "",
+		"RATE_LIMIT_REQUESTS_PER_SECOND": "",
+	}
+
+	// Load all environment variables
+	for key := range envMap {
+		envMap[key] = os.Getenv(key)
+	}
+
+	// Set values if they're not already set from Vault
+	if config.AppID == 0 && envMap["GITHUB_APP_ID"] != "" {
+		config.AppID, _ = strconv.Atoi(envMap["GITHUB_APP_ID"])
+	}
+	if config.InstallationID == 0 && envMap["GITHUB_INSTALLATION_ID"] != "" {
+		config.InstallationID, _ = strconv.Atoi(envMap["GITHUB_INSTALLATION_ID"])
+	}
+	if config.PrivateKeyPath == "" {
+		config.PrivateKeyPath = envMap["GITHUB_PRIVATE_KEY_PATH"]
+	}
+	if config.APIBaseURL == "" {
+		config.APIBaseURL = envMap["GITHUB_API_BASE_URL"]
+	}
+	if config.ServerPort == "" {
+		config.ServerPort = envMap["PORT"]
+	}
+	if config.WorkerCount == 0 && envMap["WORKER_COUNT"] != "" {
+		config.WorkerCount, _ = strconv.Atoi(envMap["WORKER_COUNT"])
+	}
+	if config.RetentionHours == 0 && envMap["RETENTION_HOURS"] != "" {
+		config.RetentionHours, _ = strconv.Atoi(envMap["RETENTION_HOURS"])
+	}
+	if config.TempPatterns == "" {
+		config.TempPatterns = envMap["TEMP_PATTERNS"]
+	}
+	if config.RateLimit == 0 && envMap["RATE_LIMIT_REQUESTS_PER_SECOND"] != "" {
+		config.RateLimit, _ = strconv.Atoi(envMap["RATE_LIMIT_REQUESTS_PER_SECOND"])
+	}
+}
+
+func setDefaultConfig(config *Config) {
+	defaults := map[string]interface{}{
+		"port":            "8080",
+		"worker_count":    4,
+		"retention_hours": 24,
+		"rate_limit":      10,
+		"temp_patterns":   "*_site.yml,*_hosts",
+		"api_base_url":    "https://api.github.com",
+	}
+
+	for key, value := range defaults {
+		switch v := value.(type) {
+		case int:
+			switch key {
+			case "worker_count":
+				if config.WorkerCount == 0 {
+					config.WorkerCount = v
+				}
+			case "retention_hours":
+				if config.RetentionHours == 0 {
+					config.RetentionHours = v
+				}
+			case "rate_limit":
+				if config.RateLimit == 0 {
+					config.RateLimit = v
+				}
+			}
+		case string:
+			switch key {
+			case "port":
+				if config.ServerPort == "" {
+					config.ServerPort = v
+				}
+			case "temp_patterns":
+				if config.TempPatterns == "" {
+					config.TempPatterns = v
+				}
+			case "api_base_url":
+				if config.APIBaseURL == "" {
+					config.APIBaseURL = v
+				}
+			}
+		}
+	}
+}
+
 type Server struct {
 	Mux                  *http.ServeMux
 	Server               *http.Server
@@ -66,108 +236,32 @@ func New() (*Server, error) {
 		log.Warn().Err(err).Msg("Failed to initialize Vault client, falling back to environment variables")
 	}
 
-	// Get configuration from Vault if available, otherwise use environment variables
-	var (
-		appID          string
-		installationID string
-		privateKeyPath string
-		apiBaseURL     string
-		serverPort     string
-		workerCount    string
-		retentionHours string
-		tempPatterns   string
-		rateLimit      string
-	)
-
-	if vaultClient != nil {
-		// Try to get GitHub configuration from Vault
-		if githubConfig, err := vaultClient.GetSecret("ansible/github"); err == nil {
-			appID = fmt.Sprint(githubConfig["app_id"])
-			installationID = fmt.Sprint(githubConfig["installation_id"])
-			privateKeyPath = fmt.Sprint(githubConfig["private_key_path"])
-		}
-
-		// Try to get API configuration from Vault
-		if apiConfig, err := vaultClient.GetSecret("ansible/api"); err == nil {
-			serverPort = fmt.Sprint(apiConfig["port"])
-			workerCount = fmt.Sprint(apiConfig["worker_count"])
-			retentionHours = fmt.Sprint(apiConfig["retention_hours"])
-		}
+	// Load configuration
+	config, err := loadConfigFromVault(vaultClient)
+	if err != nil {
+		return nil, fmt.Errorf("failed to load configuration from Vault: %w", err)
 	}
 
-	// Fall back to environment variables if Vault is not available or secrets not found
-	if appID == "" {
-		appID = os.Getenv("GITHUB_APP_ID")
-	}
-	if installationID == "" {
-		installationID = os.Getenv("GITHUB_INSTALLATION_ID")
-	}
-	if privateKeyPath == "" {
-		privateKeyPath = os.Getenv("GITHUB_PRIVATE_KEY_PATH")
-	}
-	if apiBaseURL == "" {
-		apiBaseURL = os.Getenv("GITHUB_API_BASE_URL")
-	}
-	if serverPort == "" {
-		serverPort = os.Getenv("PORT")
-	}
-	if workerCount == "" {
-		workerCount = os.Getenv("WORKER_COUNT")
-	}
-	if retentionHours == "" {
-		retentionHours = os.Getenv("RETENTION_HOURS")
-	}
-	if tempPatterns == "" {
-		tempPatterns = os.Getenv("TEMP_PATTERNS")
-	}
-	if rateLimit == "" {
-		rateLimit = os.Getenv("RATE_LIMIT_REQUESTS_PER_SECOND")
-	}
-
-	// Convert string values to integers
-	appIDInt, _ := strconv.Atoi(appID)
-	installationIDInt, _ := strconv.Atoi(installationID)
-	workerCountInt, _ := strconv.Atoi(workerCount)
-	retentionHoursInt, _ := strconv.Atoi(retentionHours)
-	rateLimitInt, _ := strconv.Atoi(rateLimit)
-
-	// Set defaults if values are not set
-	if serverPort == "" {
-		serverPort = "8080"
-	}
-	if workerCountInt == 0 {
-		workerCountInt = 4
-	}
-	if retentionHoursInt == 0 {
-		retentionHoursInt = 24
-	}
-	if rateLimitInt == 0 {
-		rateLimitInt = 10
-	}
-	if tempPatterns == "" {
-		tempPatterns = "*_site.yml,*_hosts"
-	}
-	if apiBaseURL == "" {
-		apiBaseURL = "https://api.github.com"
-	}
+	loadConfigFromEnv(config)
+	setDefaultConfig(config)
 
 	s := &Server{
 		Mux:                  http.NewServeMux(),
 		Logger:               log.With().Str("component", "server").Logger(),
 		Jobs:                 make(map[string]*servicemodel.Job),
 		JobQueue:             make(chan *servicemodel.Job, 100),
-		RateLimiter:          rate.NewLimiter(rate.Every(time.Second), rateLimitInt),
-		GithubAppID:          appIDInt,
-		GithubInstallationID: installationIDInt,
-		GithubPrivateKeyPath: privateKeyPath,
-		GithubAPIBaseURL:     apiBaseURL,
+		RateLimiter:          rate.NewLimiter(rate.Every(time.Second), config.RateLimit),
+		GithubAppID:          config.AppID,
+		GithubInstallationID: config.InstallationID,
+		GithubPrivateKeyPath: config.PrivateKeyPath,
+		GithubAPIBaseURL:     config.APIBaseURL,
 		VaultClient:          vaultClient,
 	}
 
 	s.registerRoutes()
 
 	s.Server = &http.Server{
-		Addr:    ":" + serverPort,
+		Addr:    ":" + config.ServerPort,
 		Handler: s.Mux,
 	}
 

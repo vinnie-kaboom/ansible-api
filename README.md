@@ -11,7 +11,7 @@ A modern Go-based API service to run Ansible playbooks remotely. This service al
 - Configurable worker pool and rate limiting
 - Structured logging with zerolog
 - Health check and job management endpoints
-- Configuration via environment variables or `config.cfg`
+- Configuration via environment variables
 
 ## Prerequisites
 
@@ -32,11 +32,7 @@ go build -o ansible-api ./cmd/service
 
 ## Configuration
 
-You can configure the application using either environment variables or a `config.cfg` file. Environment variables take precedence over the config file.
-
-### Environment Variables
-
-Copy the example environment file and update the values:
+The application is configured using environment variables. Copy the example environment file and update the values:
 
 ```bash
 cp .env.example .env
@@ -52,38 +48,14 @@ Optional environment variables:
 - `PORT`: Server port (default: 8080)
 - `WORKER_COUNT`: Number of worker goroutines (default: 4)
 - `RETENTION_HOURS`: Hours to retain temporary files (default: 24)
-
-### Config File
-
-Alternatively, create a `config.cfg` file in the project root:
-
-```ini
-[server]
-port = 8080
-worker_count = 4
-
-[files]
-retention_hours = 24
-temp_patterns = *_site.yml, *_hosts
-
-[rate_limit]
-requests_per_second = 10
-
-[githubapp]
-app_id = your_app_id
-installation_id = your_installation_id
-private_key_path = /path/to/your/private-key.pem
-api_base_url = https://api.github.com
-```
+- `TEMP_PATTERNS`: Comma-separated list of temporary file patterns (default: *_site.yml,*_hosts)
+- `RATE_LIMIT_REQUESTS_PER_SECOND`: Rate limit for API requests (default: 10)
 
 ## Running the Server
 
 ```bash
 # Using environment variables
 source .env
-./ansible-api
-
-# Or using config file
 ./ansible-api
 ```
 

@@ -1,0 +1,71 @@
+---
+- name: Install and Configure Ansible API Service
+  hosts: ansible_api_servers
+  become: true
+  vars:
+    ansible_api_version: "latest"
+    ansible_api_port: 8080
+    ansible_api_worker_count: 4
+    ansible_api_retention_hours: 24
+    ansible_api_config_dir: /etc/ansible-api
+    ansible_api_binary_dir: /usr/local/bin
+    ansible_api_service_user: ansible-api
+    ansible_api_service_group: ansible-api
+
+  tasks:
+    - name: Install required packages
+      package:
+        name:
+          - git
+          - ansible
+          - golang
+        state: present
+
+    - name: Create ansible-api service user
+      user:
+        name: "{{ ansible_api_service_user }}"
+        group: "{{ ansible_api_service_group }}"
+        shell: /sbin/nologin
+        create_home: false
+        system: true
+
+    - name: Create ansible-api directories
+      file:
+        path: "{{ item }}"
+        state: directory
+        owner: "{{ ansible_api_service_user }}"
+        group: "{{ ansible_api_service_group }}"
+        mode: '0755'
+      with_items:
+        - "{{ ansible_api_config_dir }}"
+        - "{{ ansible_api_config_dir }}/logs"
+        - "{{ ansible_api_config_dir }}/temp"
+
+    - name: Copy ansible-api binary
+      copy:
+        src: "{{ playbook_dir }}/../../ansiappgo"
+        dest: "{{ ansible_api_binary_dir }}/ansible-api"
+        mode: '0755'
+        owner: "{{ ansible_api_service_user }}"
+        group: "{{ ansible_api_service_group }}"
+
+    - name: Create environment file
+      template:
+        src: "{{ playbook_dir }}/templates/.env.j2"
+        dest: "{{ ansible_api_config_dir }}/.env"
+        owner: "{{ ansible_api_service_user }}"
+        group: "{{ ansible_api_service_group }}"
+        mode: '0640'
+
+    - name: Create systemd service file
+      template:
+        src: "{{ playbook_dir }}/templates/ansible-api.service.j2"
+        dest: /etc/systemd/system/ansible-api.service
+        mode: '0644'
+
+    - name: Enable and start ansible-api service
+      systemd:
+        name: ansible-api
+        state: started
+        enabled: true
+        daemon_reload: true 

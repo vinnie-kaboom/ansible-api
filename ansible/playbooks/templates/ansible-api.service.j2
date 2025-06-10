@@ -1,0 +1,17 @@
+[Unit]
+Description=Ansible API Service
+After=network.target
+
+[Service]
+Type=simple
+User={{ ansible_api_service_user }}
+Group={{ ansible_api_service_group }}
+WorkingDirectory={{ ansible_api_config_dir }}
+ExecStart={{ ansible_api_binary_dir }}/ansible-api
+Restart=always
+RestartSec=10
+StandardOutput=append:{{ ansible_api_config_dir }}/logs/ansible-api.log
+StandardError=append:{{ ansible_api_config_dir }}/logs/ansible-api.error.log
+
+[Install]
+WantedBy=multi-user.target 
