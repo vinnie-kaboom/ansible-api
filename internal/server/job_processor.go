@@ -1,14 +1,12 @@
 package server
 
 import (
+	"ansible-api/internal/githubapp"
 	"net/url"
 	"os"
 	"os/exec"
 	"path/filepath"
 	"time"
-
-	servicemodel "ansible-api/datamodel/service-model"
-	"ansible-api/internal/githubapp"
 
 	"gopkg.in/src-d/go-git.v4"
 )
@@ -49,16 +47,13 @@ func (p *JobProcessor) ProcessJobs() {
 		if err != nil {
 			p.server.Logger.Error().Err(err).Msg("Failed to authenticate with GitHub")
 			p.updateJobStatus(job, "failed", "", "GitHub App authentication failed: "+err.Error())
-			//            err := os.RemoveAll(tmpDir)
-			//            if err != nil {
-			//                p.server.Logger.Error().Err(err).Msg("Failed to remove temporary directory")
-			//                return
-			//            }
+			err := os.RemoveAll(tmpDir)
+			if err != nil {
+				p.server.Logger.Error().Err(err).Msg("Failed to remove temporary directory")
+				return
+			}
 			continue
 		}
-
-		// DEBUG: Print the installation token for manual testing (REMOVE AFTER DEBUGGING)
-		p.server.Logger.Info().Str("installation_token", token).Msg("DEBUG: GitHub App installation token")
 
 		repoPath := extractRepoPath(job.RepositoryURL)
 		host := extractHost(job.RepositoryURL)
@@ -73,11 +68,11 @@ func (p *JobProcessor) ProcessJobs() {
 		})
 		if err != nil {
 			p.updateJobStatus(job, "failed", "", err.Error())
-			//            err := os.RemoveAll(tmpDir)
-			//            if err != nil {
-			//                p.server.Logger.Error().Err(err).Msg("Failed to remove temporary directory")
-			//                return
-			//            }
+			err := os.RemoveAll(tmpDir)
+			if err != nil {
+				p.server.Logger.Error().Err(err).Msg("Failed to remove temporary directory")
+				return
+			}
 			continue
 		}
 
@@ -85,11 +80,11 @@ func (p *JobProcessor) ProcessJobs() {
 		inventoryFile, err := os.Create(inventoryFilePath)
 		if err != nil {
 			p.updateJobStatus(job, "failed", "", err.Error())
-			//            err := os.RemoveAll(tmpDir)
-			//            if err != nil {
-			//                p.server.Logger.Error().Err(err).Msg("Failed to remove temporary directory")
-			//                return
-			//            }
+			err := os.RemoveAll(tmpDir)
+			if err != nil {
+				p.server.Logger.Error().Err(err).Msg("Failed to remove temporary directory")
+				return
+			}
 			continue
 		}
 
@@ -103,11 +98,11 @@ func (p *JobProcessor) ProcessJobs() {
 				p.server.Logger.Error().Err(err).Msg("Failed to close inventory file")
 				return
 			}
-			//            err = os.RemoveAll(tmpDir)
-			//            if err != nil {
-			//                p.server.Logger.Error().Err(err).Msg("Failed to remove temporary directory")
-			//                return
-			//            }
+			err = os.RemoveAll(tmpDir)
+			if err != nil {
+				p.server.Logger.Error().Err(err).Msg("Failed to remove temporary directory")
+				return
+			}
 			continue
 		}
 
@@ -117,16 +112,16 @@ func (p *JobProcessor) ProcessJobs() {
 			p.server.Logger.Error().Err(err).Msg("Failed to close inventory file")
 			return
 		}
-		//            err = os.RemoveAll(tmpDir)
-		//            if err != nil {
-		//                p.server.Logger.Error().Err(err).Msg("Failed to remove temporary directory")
-		//                return
-		//            }
+		err = os.RemoveAll(tmpDir)
+		if err != nil {
+			p.server.Logger.Error().Err(err).Msg("Failed to remove temporary directory")
+			return
+		}
 	}
 }
 
 // updateJobStatus updates the status of a job
-func (p *JobProcessor) updateJobStatus(job *servicemodel.Job, status, output, errMsg string) {
+func (p *JobProcessor) updateJobStatus(job *Job, status, output, errMsg string) {
 	p.server.JobMutex.Lock()
 	defer p.server.JobMutex.Unlock()
 

@@ -7,10 +7,6 @@ import (
 	vault "github.com/hashicorp/vault/api"
 )
 
-type Client struct {
-	client *vault.Client
-}
-
 func NewClient() (*Client, error) {
 	config := vault.DefaultConfig()
 	config.Address = os.Getenv("VAULT_ADDR")

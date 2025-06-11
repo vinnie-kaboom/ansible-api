@@ -2,16 +2,12 @@ package ansible
 
 import (
 	"fmt"
-	"github.com/rs/zerolog/log"
 	"os"
+
+	"github.com/rs/zerolog/log"
 
 	"ansible-api/internal/vault"
 )
-
-// Client represents an Ansible client
-type Client struct {
-	SSHKeyPath string
-}
 
 // NewClient creates a new Ansible client
 func NewClient(vaultClient *vault.Client) (*Client, error) {
@@ -34,7 +30,7 @@ func NewClient(vaultClient *vault.Client) (*Client, error) {
 			log.Error().Err(err).Msg("failed to close temporary file after write error")
 			return nil, err
 		}
-		err := os.Remove(tmpFile.Name())
+		err = os.Remove(tmpFile.Name())
 		if err != nil {
 			log.Error().Err(err).Msg("failed to remove temporary file after write error")
 			return nil, err

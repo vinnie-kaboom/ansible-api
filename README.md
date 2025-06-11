@@ -39,12 +39,14 @@ cp .env.example .env
 ```
 
 Required environment variables:
+
 - `GITHUB_APP_ID`: Your GitHub App ID
 - `GITHUB_INSTALLATION_ID`: Your GitHub App Installation ID
 - `GITHUB_PRIVATE_KEY_PATH`: Path to your GitHub App private key
-- `GITHUB_API_BASE_URL`: GitHub API base URL (default: https://api.github.com)
+- `GITHUB_API_BASE_URL`: GitHub API base URL (default: `https://api.github.com`)
 
-Optional environment variables:
+Optional environment variables
+
 - `PORT`: Server port (default: 8080)
 - `WORKER_COUNT`: Number of worker goroutines (default: 4)
 - `RETENTION_HOURS`: Hours to retain temporary files (default: 24)

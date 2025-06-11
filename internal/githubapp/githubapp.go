@@ -19,23 +19,11 @@ const (
 	defaultAPIBaseURL    = "https://api.github.com"
 )
 
-type AuthConfig struct {
-	AppID          int
-	InstallationID int
-	PrivateKeyPath string
-	APIBaseURL     string
-}
-
 type GithubAuthenticator interface {
 	GetInstallationToken(config AuthConfig) (string, error)
 }
 
 type DefaultAuthenticator struct{}
-
-type AuthError struct {
-	Op  string
-	Err error
-}
 
 func (e *AuthError) Error() string {
 	return fmt.Sprintf("github authentication error during %s: %v", e.Op, e.Err)

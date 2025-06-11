@@ -9,10 +9,10 @@ import (
 	"regexp"
 	"strconv"
 	"strings"
-	"sync"
+
+	// "sync"
 	"time"
 
-	servicemodel "ansible-api/datamodel/service-model"
 	"ansible-api/internal/vault"
 
 	"github.com/go-playground/validator/v10"
@@ -26,26 +26,6 @@ var httpsGitRegex = regexp.MustCompile(`^https://[\w.@:/\-~]+\.git$`)
 func httpsGitURLValidator(fl validator.FieldLevel) bool {
 	gitURL := fl.Field().String()
 	return httpsGitRegex.MatchString(gitURL)
-}
-
-type PlaybookRequest struct {
-	RepositoryURL string                       `json:"repository_url" validate:"required,httpsgit"`
-	PlaybookPath  string                       `json:"playbook_path" validate:"required"`
-	Inventory     map[string]map[string]string `json:"inventory" validate:"required,min=1"`
-	Environment   map[string]string            `json:"environment"`
-	Secrets       map[string]string            `json:"secrets"`
-}
-
-type Config struct {
-	AppID          int
-	InstallationID int
-	PrivateKeyPath string
-	APIBaseURL     string
-	ServerPort     string
-	WorkerCount    int
-	RetentionHours int
-	TempPatterns   string
-	RateLimit      int
 }
 
 func (c *Config) setIntValue(key string, value interface{}) {
@@ -206,22 +186,6 @@ func setDefaultConfig(config *Config) {
 	}
 }
 
-type Server struct {
-	Mux                  *http.ServeMux
-	Server               *http.Server
-	Logger               zerolog.Logger
-	Jobs                 map[string]*servicemodel.Job
-	JobMutex             sync.RWMutex
-	JobQueue             chan *servicemodel.Job
-	RateLimiter          *rate.Limiter
-	GithubAppID          int
-	GithubInstallationID int
-	GithubPrivateKeyPath string
-	GithubAPIBaseURL     string
-	VaultClient          *vault.Client
-	jobProcessor         *JobProcessor
-}
-
 func New() (*Server, error) {
 	zerolog.TimeFieldFormat = time.RFC3339
 	log.Logger = log.Output(zerolog.ConsoleWriter{Out: os.Stdout, TimeFormat: time.RFC3339})
@@ -244,8 +208,8 @@ func New() (*Server, error) {
 	s := &Server{
 		Mux:                  http.NewServeMux(),
 		Logger:               log.With().Str("component", "server").Logger(),
-		Jobs:                 make(map[string]*servicemodel.Job),
-		JobQueue:             make(chan *servicemodel.Job, 100),
+		Jobs:                 make(map[string]*Job),
+		JobQueue:             make(chan *Job, 100),
 		RateLimiter:          rate.NewLimiter(rate.Every(time.Second), config.RateLimit),
 		GithubAppID:          config.AppID,
 		GithubInstallationID: config.InstallationID,
@@ -254,7 +218,7 @@ func New() (*Server, error) {
 		VaultClient:          vaultClient,
 	}
 
-	s.jobProcessor = NewJobProcessor(s)
+	s.JobProcessor = NewJobProcessor(s)
 	s.registerRoutes()
 
 	s.Server = &http.Server{
@@ -262,7 +226,7 @@ func New() (*Server, error) {
 		Handler: s.Mux,
 	}
 
-	go s.jobProcessor.ProcessJobs()
+	go s.JobProcessor.ProcessJobs()
 
 	return s, nil
 }
@@ -326,7 +290,7 @@ func (s *Server) handlePlaybookRun() http.HandlerFunc {
 			return
 		}
 
-		job := &servicemodel.Job{
+		job := &Job{
 			ID:            fmt.Sprintf("job-%d", time.Now().UnixNano()),
 			Status:        "queued",
 			StartTime:     time.Now(),
