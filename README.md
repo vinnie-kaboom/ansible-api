@@ -32,18 +32,31 @@ go build -o ansible-api ./cmd/service
 
 ## Configuration
 
-The application is configured using environment variables. Copy the example environment file and update the values:
+The application is configured using environment variables or HashiCorp Vault secrets. If Vault is enabled and accessible, configuration values are loaded from Vault first, then environment variables, then defaults.
 
-```bash
-cp .env.example .env
-```
+### Configuration Precedence
 
-Required environment variables:
+1. **Vault** (if available)
+2. **Environment variables**
+3. **Built-in defaults**
+
+### Required GitHub App Configuration
+
+If using Vault, the following keys must be present in the `kv/ansible/github` secret:
+
+- `app_id`: Your GitHub App ID
+- `installation_id`: Your GitHub App Installation ID
+- `private_key_path`: Path to your GitHub App private key
+- `api_base_url`: GitHub API base URL (required for GitHub Enterprise, e.g., `https://github.<yourdomain>.com/api/v3`)
+
+If not using Vault, set these as environment variables:
 
 - `GITHUB_APP_ID`: Your GitHub App ID
 - `GITHUB_INSTALLATION_ID`: Your GitHub App Installation ID
 - `GITHUB_PRIVATE_KEY_PATH`: Path to your GitHub App private key
 - `GITHUB_API_BASE_URL`: GitHub API base URL (default: `https://api.github.com`)
+
+> **Note:** For GitHub Enterprise, you must set `api_base_url` in Vault or `GITHUB_API_BASE_URL` as an environment variable to your instance URL (e.g., `https://github.<yourdomain>.com/api/v3`).
 
 Optional environment variables
 

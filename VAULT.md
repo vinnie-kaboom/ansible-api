@@ -251,8 +251,11 @@ Expected output:
 vault kv put kv/ansible/github \
   app_id="your_app_id" \
   installation_id="your_installation_id" \
-  private_key_path="/path/to/private/key"
+  private_key_path="/path/to/private/key" \
+  api_base_url="https://github.<yourdomain>.com/api/v3"
 ```
+
+> **Note:** `api_base_url` is required for GitHub Enterprise. If omitted, the application will default to public GitHub (`https://api.github.com`), which will cause authentication failures (401 Unauthorized) for enterprise credentials.
 
 3 Store API configuration:
 
@@ -690,3 +693,13 @@ This will allow you to store and retrieve secrets at the `kv/` path as expected.
 - [Vault Architecture](https://www.vaultproject.io/docs/internals/architecture)
 - [Vault API Documentation](https://www.vaultproject.io/api-docs)
 - [Vault CLI Commands](https://www.vaultproject.io/docs/commands)
+
+## Configuration Precedence
+
+The application loads configuration in the following order:
+
+1. **Vault** (if available)
+2. **Environment variables**
+3. **Built-in defaults**
+
+If a key is missing in Vault, the environment variable is used. If both are missing, the default is used.
