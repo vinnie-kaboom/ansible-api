@@ -38,7 +38,7 @@ func (p *JobProcessor) ProcessJobs() {
 			continue
 		}
 
-		p.server.Logger.Info().Msg("Attempting to authenticate with GitHub")
+		p.server.Logger.Info().Msg("Authenticating with GitHub App")
 
 		token, err := (&githubapp.DefaultAuthenticator{}).GetInstallationToken(githubapp.AuthConfig{
 			AppID:          p.server.GithubAppID,
@@ -61,8 +61,8 @@ func (p *JobProcessor) ProcessJobs() {
 		host := extractHost(job.RepositoryURL)
 		cloneURL := githubapp.BuildCloneURL(token, repoPath, host)
 
-		maskedCloneURL := maskTokenInURL(cloneURL)
-		p.server.Logger.Info().Str("clone_url", maskedCloneURL).Msg("Cloning repository")
+		// Log only the repository path, not the full URL with token
+		p.server.Logger.Info().Str("repository", repoPath).Msg("Cloning repository")
 
 		// Create a custom writer to capture and format Git output
 		gitOutput := &gitOutputWriter{logger: p.server.Logger.With().Str("component", "git").Logger()}
@@ -95,8 +95,19 @@ func (p *JobProcessor) ProcessJobs() {
 		playbookPath := filepath.Join(tmpDir, job.PlaybookPath)
 		ansibleCmd := exec.Command("ansible-playbook", playbookPath, "-i", inventoryFilePath)
 		ansibleCmd.Dir = tmpDir
-		if output, err := ansibleCmd.CombinedOutput(); err != nil {
-			p.updateJobStatus(job, "failed", string(output), err.Error())
+
+		// Create a custom writer to capture and format Ansible output
+		ansibleOutput := &ansibleOutputWriter{logger: p.server.Logger.With().Str("component", "ansible").Logger()}
+		ansibleCmd.Stdout = ansibleOutput
+		ansibleCmd.Stderr = ansibleOutput
+
+		p.server.Logger.Info().
+			Str("playbook", job.PlaybookPath).
+			Str("inventory", inventoryFilePath).
+			Msg("Executing Ansible playbook")
+
+		if err := ansibleCmd.Run(); err != nil {
+			p.updateJobStatus(job, "failed", ansibleOutput.GetOutput(), err.Error())
 			err := inventoryFile.Close()
 			if err != nil {
 				p.server.Logger.Error().Err(err).Msg("Failed to close inventory file")
@@ -110,7 +121,11 @@ func (p *JobProcessor) ProcessJobs() {
 			continue
 		}
 
-		p.updateJobStatus(job, "completed", "", "")
+		p.server.Logger.Info().
+			Str("playbook", job.PlaybookPath).
+			Msg("Ansible playbook execution completed")
+
+		p.updateJobStatus(job, "completed", ansibleOutput.GetOutput(), "")
 		err = inventoryFile.Close()
 		if err != nil {
 			p.server.Logger.Error().Err(err).Msg("Failed to close inventory file")
@@ -179,4 +194,38 @@ func (w *gitOutputWriter) Write(p []byte) (n int, err error) {
 		w.logger.Info().Str("progress", output).Msg("Git clone progress")
 	}
 	return len(p), nil
+}
+
+// ansibleOutputWriter is a custom writer to capture and format Ansible output
+type ansibleOutputWriter struct {
+	logger zerolog.Logger
+	buffer strings.Builder
+}
+
+func (w *ansibleOutputWriter) Write(p []byte) (n int, err error) {
+	// Store the output for job status
+	w.buffer.Write(p)
+
+	// Log each line separately for better readability
+	lines := strings.Split(string(p), "\n")
+	for _, line := range lines {
+		line = strings.TrimSpace(line)
+		if line != "" {
+			// Determine log level based on content
+			if strings.Contains(line, "ERROR") || strings.Contains(line, "fatal:") {
+				w.logger.Error().Str("output", line).Msg("Ansible execution")
+			} else if strings.Contains(line, "WARNING") {
+				w.logger.Warn().Str("output", line).Msg("Ansible execution")
+			} else if strings.Contains(line, "TASK") || strings.Contains(line, "PLAY") {
+				w.logger.Info().Str("output", line).Msg("Ansible execution")
+			} else {
+				w.logger.Debug().Str("output", line).Msg("Ansible execution")
+			}
+		}
+	}
+	return len(p), nil
+}
+
+func (w *ansibleOutputWriter) GetOutput() string {
+	return w.buffer.String()
 }
