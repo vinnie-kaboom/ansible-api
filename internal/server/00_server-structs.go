@@ -2,10 +2,10 @@ package server
 
 import (
 	"ansible-api/internal/vault"
-	"net/http"
 	"sync"
 	"time"
 
+	"github.com/gin-gonic/gin"
 	"github.com/rs/zerolog"
 	"golang.org/x/time/rate"
 )
@@ -25,8 +25,7 @@ type Config struct {
 
 // Server represents the main API server and its dependencies.
 type Server struct {
-	Mux                  *http.ServeMux
-	Server               *http.Server
+	Router               *gin.Engine
 	Logger               zerolog.Logger
 	Jobs                 map[string]*Job
 	JobMutex             sync.RWMutex
@@ -36,8 +35,9 @@ type Server struct {
 	GithubInstallationID int
 	GithubPrivateKeyPath string
 	GithubAPIBaseURL     string
-	VaultClient          *vault.Client
-	JobProcessor         *JobProcessor // Use the correct type if needed
+	VaultClient          *vault.VaultClient
+	JobProcessor         *JobProcessor
+	Config               *Config
 }
 
 // PlaybookRequest represents a request to run an Ansible playbook.

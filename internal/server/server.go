@@ -7,11 +7,11 @@ import (
 	"github.com/rs/zerolog/log"
 )
 
-func LoadConfiguration(vaultClient *vault.Client, config *Config) {
+func LoadConfiguration(vaultClient *vault.VaultClient, config *Config) {
 	// Load GitHub configuration
 	githubVaultPath := os.Getenv("GITHUB_VAULT_PATH")
 	if githubVaultPath == "" {
-		githubVaultPath = "kv/ansible/github"
+		githubVaultPath = "ansible/github"
 	}
 	if githubConfig, err := vaultClient.GetSecret(githubVaultPath); err == nil {
 		for key, value := range githubConfig {
@@ -25,7 +25,7 @@ func LoadConfiguration(vaultClient *vault.Client, config *Config) {
 	// Load API configuration
 	apiVaultPath := os.Getenv("API_VAULT_PATH")
 	if apiVaultPath == "" {
-		apiVaultPath = "kv/ansible/api"
+		apiVaultPath = "ansible/api"
 	}
 	if apiConfig, err := vaultClient.GetSecret(apiVaultPath); err == nil {
 		for key, value := range apiConfig {

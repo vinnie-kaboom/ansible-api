@@ -6,8 +6,10 @@ import (
 	"os"
 	"os/exec"
 	"path/filepath"
+	"strings"
 	"time"
 
+	"github.com/rs/zerolog"
 	"gopkg.in/src-d/go-git.v4"
 )
 
@@ -62,9 +64,11 @@ func (p *JobProcessor) ProcessJobs() {
 		maskedCloneURL := maskTokenInURL(cloneURL)
 		p.server.Logger.Info().Str("clone_url", maskedCloneURL).Msg("Cloning repository")
 
+		// Create a custom writer to capture and format Git output
+		gitOutput := &gitOutputWriter{logger: p.server.Logger.With().Str("component", "git").Logger()}
 		_, err = git.PlainClone(tmpDir, false, &git.CloneOptions{
 			URL:      cloneURL,
-			Progress: os.Stdout,
+			Progress: gitOutput,
 		})
 		if err != nil {
 			p.updateJobStatus(job, "failed", "", err.Error())
@@ -161,4 +165,18 @@ func extractHost(repoURL string) string {
 		return "github.com" // fallback to github.com if parsing fails
 	}
 	return u.Host
+}
+
+// gitOutputWriter is a custom writer to capture and format Git output
+type gitOutputWriter struct {
+	logger zerolog.Logger
+}
+
+func (w *gitOutputWriter) Write(p []byte) (n int, err error) {
+	// Convert Git's progress output to a single info line
+	output := strings.TrimSpace(string(p))
+	if output != "" {
+		w.logger.Info().Str("progress", output).Msg("Git clone progress")
+	}
+	return len(p), nil
 }

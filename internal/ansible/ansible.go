@@ -10,7 +10,7 @@ import (
 )
 
 // NewClient creates a new Ansible client
-func NewClient(vaultClient *vault.Client) (*Client, error) {
+func NewClient(vaultClient *vault.VaultClient) (*Client, error) {
 	// Get an SSH key from Vault
 	sshKey, err := vaultClient.GetSSHKey()
 	if err != nil {
