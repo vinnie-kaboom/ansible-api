@@ -43,7 +43,7 @@ func (p *JobProcessor) ProcessJobs() {
 		token, err := (&githubapp.DefaultAuthenticator{}).GetInstallationToken(githubapp.AuthConfig{
 			AppID:          p.server.GithubAppID,
 			InstallationID: p.server.GithubInstallationID,
-			PrivateKeyPath: p.server.GithubPrivateKeyPath,
+			PrivateKey:     p.server.GithubPrivateKey,
 			APIBaseURL:     p.server.GithubAPIBaseURL,
 		})
 		if err != nil {

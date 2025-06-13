@@ -5,7 +5,6 @@ import (
 	"fmt"
 	"io"
 	"net/http"
-	"os"
 	"time"
 
 	"github.com/golang-jwt/jwt/v5"
@@ -28,11 +27,8 @@ func (e *AuthError) Error() string {
 
 // GetInstallationToken generates a GitHub App installation token
 func (a *DefaultAuthenticator) GetInstallationToken(config AuthConfig) (string, error) {
-	// Read the private key
-	privateKey, err := os.ReadFile(config.PrivateKeyPath)
-	if err != nil {
-		return "", fmt.Errorf("failed to read private key: %w", err)
-	}
+	// Use the private key content directly from config
+	privateKey := []byte(config.PrivateKey)
 
 	// Generate JWT
 	now := time.Now()

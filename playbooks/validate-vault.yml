@@ -1,0 +1,55 @@
+---
+- name: Validate Vault Configuration
+  hosts: webservers
+  gather_facts: false
+  tasks:
+    - name: Check Vault connectivity
+      uri:
+        url: "{{ vault_addr }}/v1/sys/health"
+        method: GET
+        status_code: [200, 429, 473, 501, 503]
+        validate_certs: false
+      register: vault_health
+      environment:
+        VAULT_ADDR: "{{ vault_addr }}"
+        VAULT_ROLE_ID: "{{ vault_role_id }}"
+        VAULT_SECRET_ID: "{{ vault_secret_id }}"
+
+    - name: Display Vault health status
+      debug:
+        msg: "Vault is {{ 'healthy' if vault_health.status == 200 else 'unsealed but standby' if vault_health.status == 429 else 'unsealed and active' if vault_health.status == 473 else 'uninitialized' if vault_health.status == 501 else 'sealed' if vault_health.status == 503 else 'unknown status' }}"
+
+    - name: Verify KV secrets engine
+      uri:
+        url: "{{ vault_addr }}/v1/sys/mounts"
+        method: GET
+        validate_certs: false
+      register: vault_mounts
+      environment:
+        VAULT_ADDR: "{{ vault_addr }}"
+        VAULT_ROLE_ID: "{{ vault_role_id }}"
+        VAULT_SECRET_ID: "{{ vault_secret_id }}"
+
+    - name: Display KV mounts
+      debug:
+        msg: "{{ vault_mounts.json }}"
+
+    - name: Verify AppRole authentication
+      uri:
+        url: "{{ vault_addr }}/v1/auth/approle/login"
+        method: POST
+        body_format: json
+        body: |
+          {
+            "role_id": "{{ vault_role_id }}",
+            "secret_id": "{{ vault_secret_id }}"
+          }
+        validate_certs: false
+      register: vault_login
+      environment:
+        VAULT_ADDR: "{{ vault_addr }}"
+
+    - name: Display login status
+      debug:
+        msg: "Successfully authenticated with AppRole"
+      when: vault_login.status == 200 

@@ -14,7 +14,7 @@ import (
 type Config struct {
 	AppID          int
 	InstallationID int
-	PrivateKeyPath string
+	PrivateKey     string
 	APIBaseURL     string
 	ServerPort     string
 	WorkerCount    int
@@ -33,7 +33,7 @@ type Server struct {
 	RateLimiter          *rate.Limiter
 	GithubAppID          int
 	GithubInstallationID int
-	GithubPrivateKeyPath string
+	GithubPrivateKey     string
 	GithubAPIBaseURL     string
 	VaultClient          *vault.VaultClient
 	JobProcessor         *JobProcessor
