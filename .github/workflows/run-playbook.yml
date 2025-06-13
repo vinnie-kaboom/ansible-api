@@ -1,10 +1,6 @@
-name: Run Ansible Playbook
+name: Run Ansible Playbook via API
 
 on:
-  push:
-    branches: [ main ]
-  pull_request:
-    branches: [ main ]
   workflow_dispatch:  # Allows manual triggering
 
 env:
@@ -15,20 +11,22 @@ jobs:
     runs-on: ubuntu-latest
     
     steps:
-    - name: Run playbook
+    - name: Make API request to run playbook
+      env:
+        ANSIBLE_API_URL: ${{ env.API_URL }}
+        ANSIBLE_USER: vincent-zamora
+        ANSIBLE_PASSWORD: ${{ secrets.ANSIBLE_PASSWORD }}
       run: |
-        curl -X POST ${{ env.API_URL }}/api/playbook/run \
+        curl -X POST "$ANSIBLE_API_URL" \
           -H "Content-Type: application/json" \
           -d '{
-            "repository_url": "https://github.com/vinnie-kaboom/ansible-repo.git",
+            "repository_url": "https://git.cce3.gpc/vincent-zamora/test-repo.git",
             "playbook_path": "playbooks/site.yml",
             "inventory": {
               "webservers": {
-                "ansible_host": "localhost"
+                "ansible_user": "'$ANSIBLE_USER'",
+                "ansible_password": "'$ANSIBLE_PASSWORD'"
               }
-            },
-            "environment": {
-              "ANSIBLE_HOST_KEY_CHECKING": "False"
             }
           }'
 

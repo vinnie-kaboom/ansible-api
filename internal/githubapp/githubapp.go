@@ -1,16 +1,14 @@
 package githubapp
 
 import (
-	"context"
-	"encoding/pem"
+	"encoding/json"
 	"fmt"
+	"io"
+	"net/http"
 	"os"
 	"time"
 
 	"github.com/golang-jwt/jwt/v5"
-	"github.com/google/go-github/v55/github"
-	"github.com/rs/zerolog/log"
-	"golang.org/x/oauth2"
 )
 
 const (
@@ -18,23 +16,11 @@ const (
 	defaultAPIBaseURL    = "https://api.github.com"
 )
 
-type AuthConfig struct {
-	AppID          int
-	InstallationID int
-	PrivateKeyPath string
-	APIBaseURL     string
-}
-
 type GithubAuthenticator interface {
 	GetInstallationToken(config AuthConfig) (string, error)
 }
 
 type DefaultAuthenticator struct{}
-
-type AuthError struct {
-	Op  string
-	Err error
-}
 
 func (e *AuthError) Error() string {
 	return fmt.Sprintf("github authentication error during %s: %v", e.Op, e.Err)
@@ -42,72 +28,60 @@ func (e *AuthError) Error() string {
 
 // GetInstallationToken generates a GitHub App installation token
 func (a *DefaultAuthenticator) GetInstallationToken(config AuthConfig) (string, error) {
-	jwtToken, err := generateGitHubAppJWT(config.AppID, config.PrivateKeyPath)
+	// Read the private key
+	privateKey, err := os.ReadFile(config.PrivateKeyPath)
 	if err != nil {
-		return "", err
-	}
-	return exchangeJWTForToken(jwtToken, config.InstallationID, config.APIBaseURL)
-}
-
-func generateGitHubAppJWT(appID int, privateKeyPath string) (string, error) {
-	logger := log.With().Str("pem_path", privateKeyPath).Logger()
-	logger.Info().Msg("Reading GitHub App private key PEM file")
-
-	keyBytes, err := os.ReadFile(privateKeyPath)
-	if err != nil {
-		return "", &AuthError{Op: "read_private_key", Err: err}
+		return "", fmt.Errorf("failed to read private key: %w", err)
 	}
 
-	block, _ := pem.Decode(keyBytes)
-	if block == nil {
-		return "", &AuthError{Op: "decode_pem", Err: fmt.Errorf("invalid PEM format")}
-	}
-
-	privKey, err := jwt.ParseRSAPrivateKeyFromPEM(keyBytes)
-	if err != nil {
-		return "", &AuthError{Op: "parse_rsa_key", Err: err}
-	}
-
+	// Generate JWT
 	now := time.Now()
 	claims := jwt.MapClaims{
 		"iat": now.Unix(),
-		"exp": now.Add(time.Minute * jwtExpirationMinutes).Unix(),
-		"iss": appID,
+		"exp": now.Add(10 * time.Minute).Unix(),
+		"iss": config.AppID,
 	}
 
 	token := jwt.NewWithClaims(jwt.SigningMethodRS256, claims)
-	logger.Info().Msg("Generated JWT for GitHub App authentication")
-
-	return token.SignedString(privKey)
-}
-
-func exchangeJWTForToken(jwtToken string, installationID int, apiBaseURL string) (string, error) {
-	logger := log.With().Int("installation_id", installationID).Logger()
-	logger.Info().Msg("Requesting GitHub App installation token")
-
-	ctx := context.Background()
-	ts := oauth2.StaticTokenSource(&oauth2.Token{AccessToken: jwtToken})
-	tc := oauth2.NewClient(ctx, ts)
-
-	var client *github.Client
-	var err error
-
-	if apiBaseURL != "" && apiBaseURL != defaultAPIBaseURL {
-		client, err = github.NewEnterpriseClient(apiBaseURL, apiBaseURL, tc)
-		if err != nil {
-			return "", &AuthError{Op: "create_enterprise_client", Err: err}
-		}
-	} else {
-		client = github.NewClient(tc)
-	}
-
-	token, _, err := client.Apps.CreateInstallationToken(ctx, int64(installationID), nil)
+	key, err := jwt.ParseRSAPrivateKeyFromPEM(privateKey)
 	if err != nil {
-		return "", &AuthError{Op: "create_installation_token", Err: err}
+		return "", fmt.Errorf("failed to parse private key: %w", err)
 	}
 
-	logger.Info().Msg("Successfully obtained GitHub App installation token")
-	return token.GetToken(), nil
+	jwtToken, err := token.SignedString(key)
+	if err != nil {
+		return "", fmt.Errorf("failed to sign JWT: %w", err)
+	}
+
+	// Request installation token
+	client := &http.Client{}
+	req, err := http.NewRequest("POST", fmt.Sprintf("%s/app/installations/%d/access_tokens", config.APIBaseURL, config.InstallationID), nil)
+	if err != nil {
+		return "", fmt.Errorf("failed to create request: %w", err)
+	}
+
+	req.Header.Set("Authorization", "Bearer "+jwtToken)
+	req.Header.Set("Accept", "application/vnd.github.v3+json")
+
+	resp, err := client.Do(req)
+	if err != nil {
+		return "", fmt.Errorf("failed to request installation token: %w", err)
+	}
+	defer resp.Body.Close()
+
+	if resp.StatusCode != http.StatusCreated {
+		body, _ := io.ReadAll(resp.Body)
+		return "", fmt.Errorf("failed to get installation token: %s - %s", resp.Status, string(body))
+	}
+
+	var result struct {
+		Token string `json:"token"`
+	}
+	if err := json.NewDecoder(resp.Body).Decode(&result); err != nil {
+		return "", fmt.Errorf("failed to decode response: %w", err)
+	}
+
+	return result.Token, nil
 }
 
 // BuildCloneURL creates a clone URL with authentication token

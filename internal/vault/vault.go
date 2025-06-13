@@ -5,13 +5,24 @@ import (
 	"os"
 
 	vault "github.com/hashicorp/vault/api"
+	"github.com/rs/zerolog"
+	"github.com/rs/zerolog/log"
 )
 
-type Client struct {
+var logger zerolog.Logger
+
+func init() {
+	// Set up logging
+	zerolog.TimeFieldFormat = zerolog.TimeFormatUnix
+	logger = log.With().Str("component", "vault").Logger()
+}
+
+// VaultClient represents a Vault client
+type VaultClient struct {
 	client *vault.Client
 }
 
-func NewClient() (*Client, error) {
+func NewClient() (*VaultClient, error) {
 	config := vault.DefaultConfig()
 	config.Address = os.Getenv("VAULT_ADDR")
 	if config.Address == "" {
@@ -26,13 +37,12 @@ func NewClient() (*Client, error) {
 	// Get the role ID and secret ID from environment variables
 	roleID := os.Getenv("VAULT_ROLE_ID")
 	secretID := os.Getenv("VAULT_SECRET_ID")
-
 	if roleID == "" || secretID == "" {
 		return nil, fmt.Errorf("VAULT_ROLE_ID and VAULT_SECRET_ID must be set")
 	}
 
-	// Login with AppRole
-	secret, err := client.Logical().Write("auth/approle/login", map[string]interface{}{
+	// Login with the provided role_id and secret_id
+	loginSecret, err := client.Logical().Write("auth/approle/login", map[string]interface{}{
 		"role_id":   roleID,
 		"secret_id": secretID,
 	})
@@ -40,13 +50,13 @@ func NewClient() (*Client, error) {
 		return nil, fmt.Errorf("failed to login to vault: %w", err)
 	}
 
-	client.SetToken(secret.Auth.ClientToken)
-
-	return &Client{client: client}, nil
+	client.SetToken(loginSecret.Auth.ClientToken)
+	return &VaultClient{client: client}, nil
 }
 
-func (c *Client) GetSecret(path string) (map[string]interface{}, error) {
-	secret, err := c.client.Logical().Read(fmt.Sprintf("kv/data/%s", path))
+func (c *VaultClient) GetSecret(path string) (map[string]interface{}, error) {
+	fullPath := fmt.Sprintf("kv/data/%s", path)
+	secret, err := c.client.Logical().Read(fullPath)
 	if err != nil {
 		return nil, fmt.Errorf("failed to read secret: %w", err)
 	}
@@ -55,6 +65,7 @@ func (c *Client) GetSecret(path string) (map[string]interface{}, error) {
 		return nil, fmt.Errorf("secret not found: %s", path)
 	}
 
+	// For KV v2, the data is nested under the "data" key
 	data, ok := secret.Data["data"].(map[string]interface{})
 	if !ok {
 		return nil, fmt.Errorf("invalid secret data format")
@@ -63,18 +74,17 @@ func (c *Client) GetSecret(path string) (map[string]interface{}, error) {
 	return data, nil
 }
 
-func (c *Client) PutSecret(path string, data map[string]interface{}) error {
+func (c *VaultClient) PutSecret(path string, data map[string]interface{}) error {
 	_, err := c.client.Logical().Write(fmt.Sprintf("kv/data/%s", path), map[string]interface{}{
 		"data": data,
 	})
 	if err != nil {
 		return fmt.Errorf("failed to write secret: %w", err)
 	}
-
 	return nil
 }
 
-func (c *Client) DeleteSecret(path string) error {
+func (c *VaultClient) DeleteSecret(path string) error {
 	_, err := c.client.Logical().Delete(fmt.Sprintf("kv/data/%s", path))
 	if err != nil {
 		return fmt.Errorf("failed to delete secret: %w", err)
@@ -83,7 +93,7 @@ func (c *Client) DeleteSecret(path string) error {
 	return nil
 }
 
-func (c *Client) ListSecrets(path string) ([]string, error) {
+func (c *VaultClient) ListSecrets(path string) ([]string, error) {
 	secret, err := c.client.Logical().List(fmt.Sprintf("kv/metadata/%s", path))
 	if err != nil {
 		return nil, fmt.Errorf("failed to list secrets: %w", err)
@@ -107,24 +117,25 @@ func (c *Client) ListSecrets(path string) ([]string, error) {
 }
 
 // GetSSHKey retrieves the SSH private key from Vault
-func (c *Client) GetSSHKey() (string, error) {
+func (c *VaultClient) GetSSHKey() (string, error) {
 	secret, err := c.client.Logical().Read("kv/data/ansible/ssh-key")
 	if err != nil {
-		return "", fmt.Errorf("failed to read SSH key from Vault: %v", err)
+		return "", fmt.Errorf("failed to read SSH key from Vault: %w", err)
 	}
+
 	if secret == nil || secret.Data == nil {
-		return "", fmt.Errorf("no SSH key found in Vault")
+		return "", fmt.Errorf("SSH key not found in Vault")
 	}
 
 	data, ok := secret.Data["data"].(map[string]interface{})
 	if !ok {
-		return "", fmt.Errorf("invalid data format in Vault response")
+		return "", fmt.Errorf("invalid SSH key data format")
 	}
 
-	key, ok := data["key"].(string)
+	privateKey, ok := data["private_key"].(string)
 	if !ok {
-		return "", fmt.Errorf("SSH key not found in Vault data")
+		return "", fmt.Errorf("invalid SSH key format")
 	}
 
-	return key, nil
+	return privateKey, nil
 }

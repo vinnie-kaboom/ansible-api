@@ -11,7 +11,7 @@ A modern Go-based API service to run Ansible playbooks remotely. This service al
 - Configurable worker pool and rate limiting
 - Structured logging with zerolog
 - Health check and job management endpoints
-- Configuration via environment variables or `config.cfg`
+- Configuration via environment variables
 
 ## Prerequisites
 
@@ -32,58 +32,45 @@ go build -o ansible-api ./cmd/service
 
 ## Configuration
 
-You can configure the application using either environment variables or a `config.cfg` file. Environment variables take precedence over the config file.
+The application is configured using environment variables or HashiCorp Vault secrets. If Vault is enabled and accessible, configuration values are loaded from Vault first, then environment variables, then defaults.
 
-### Environment Variables
+### Configuration Precedence
 
-Copy the example environment file and update the values:
+1. **Vault** (if available)
+2. **Environment variables**
+3. **Built-in defaults**
 
-```bash
-cp .env.example .env
-```
+### Required GitHub App Configuration
 
-Required environment variables:
+If using Vault, the following keys must be present in the `kv/ansible/github` secret:
+
+- `app_id`: Your GitHub App ID
+- `installation_id`: Your GitHub App Installation ID
+- `private_key_path`: Path to your GitHub App private key
+- `api_base_url`: GitHub API base URL (required for GitHub Enterprise, e.g., `https://github.<yourdomain>.com/api/v3`)
+
+If not using Vault, set these as environment variables:
+
 - `GITHUB_APP_ID`: Your GitHub App ID
 - `GITHUB_INSTALLATION_ID`: Your GitHub App Installation ID
 - `GITHUB_PRIVATE_KEY_PATH`: Path to your GitHub App private key
-- `GITHUB_API_BASE_URL`: GitHub API base URL (default: https://api.github.com)
+- `GITHUB_API_BASE_URL`: GitHub API base URL (default: `https://api.github.com`)
 
-Optional environment variables:
+> **Note:** For GitHub Enterprise, you must set `api_base_url` in Vault or `GITHUB_API_BASE_URL` as an environment variable to your instance URL (e.g., `https://github.<yourdomain>.com/api/v3`).
+
+Optional environment variables
+
 - `PORT`: Server port (default: 8080)
 - `WORKER_COUNT`: Number of worker goroutines (default: 4)
 - `RETENTION_HOURS`: Hours to retain temporary files (default: 24)
-
-### Config File
-
-Alternatively, create a `config.cfg` file in the project root:
-
-```ini
-[server]
-port = 8080
-worker_count = 4
-
-[files]
-retention_hours = 24
-temp_patterns = *_site.yml, *_hosts
-
-[rate_limit]
-requests_per_second = 10
-
-[githubapp]
-app_id = your_app_id
-installation_id = your_installation_id
-private_key_path = /path/to/your/private-key.pem
-api_base_url = https://api.github.com
-```
+- `TEMP_PATTERNS`: Comma-separated list of temporary file patterns (default: *_site.yml,*_hosts)
+- `RATE_LIMIT_REQUESTS_PER_SECOND`: Rate limit for API requests (default: 10)
 
 ## Running the Server
 
 ```bash
 # Using environment variables
 source .env
-./ansible-api
-
-# Or using config file
 ./ansible-api
 ```
 
