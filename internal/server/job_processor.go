@@ -86,16 +86,22 @@ func (p *JobProcessor) ProcessJobs() {
 
 		// Use inventory file from repository if no inventory provided in request
 		inventoryFilePath := filepath.Join(tmpDir, "inventory.ini")
+		altInventoryFilePath := filepath.Join(tmpDir, "inventory", "host.ini")
 		if job.Inventory == nil {
-			// Check if inventory file exists in repository
+			// Check for inventory.ini at root
 			if _, err := os.Stat(inventoryFilePath); os.IsNotExist(err) {
-				p.updateJobStatus(job, "failed", "", "No inventory file found in repository and no inventory provided in request")
-				err := os.RemoveAll(tmpDir)
-				if err != nil {
-					p.server.Logger.Error().Err(err).Msg("Failed to remove temporary directory")
-					return
+				// If not found, check for inventory/host.ini
+				if _, err := os.Stat(altInventoryFilePath); os.IsNotExist(err) {
+					p.updateJobStatus(job, "failed", "", "No inventory file found in repository and no inventory provided in request")
+					err := os.RemoveAll(tmpDir)
+					if err != nil {
+						p.server.Logger.Error().Err(err).Msg("Failed to remove temporary directory")
+						return
+					}
+					continue
+				} else {
+					inventoryFilePath = altInventoryFilePath
 				}
-				continue
 			}
 		} else {
 			// Create inventory file from request
@@ -123,8 +129,8 @@ func (p *JobProcessor) ProcessJobs() {
 
 		playbookPath := filepath.Join(tmpDir, job.PlaybookPath)
 		ansibleCmd := exec.Command("ansible-playbook", playbookPath, "-i", inventoryFilePath)
-		if job.Limit != "" {
-			ansibleCmd.Args = append(ansibleCmd.Args, "--limit", job.Limit)
+		if job.TargetHosts != "" {
+			ansibleCmd.Args = append(ansibleCmd.Args, "--limit", job.TargetHosts)
 		}
 		ansibleCmd.Dir = tmpDir
 

@@ -47,7 +47,7 @@ type PlaybookRequest struct {
 	Inventory     map[string]map[string]string `json:"inventory"`
 	Environment   map[string]string            `json:"environment"`
 	Secrets       map[string]string            `json:"secrets"`
-	Limit         string                       `json:"limit"`
+	TargetHosts   string                       `json:"target_hosts"`
 }
 
 // Job represents a playbook execution job.
@@ -61,6 +61,6 @@ type Job struct {
 	RepositoryURL string                       `json:"repository_url"`
 	PlaybookPath  string                       `json:"playbook_path"`
 	RetryCount    int                          `json:"retry_count"`
-	Limit         string                       `json:"limit"`
+	TargetHosts   string                       `json:"target_hosts"`
 	Inventory     map[string]map[string]string `json:"inventory"`
 }

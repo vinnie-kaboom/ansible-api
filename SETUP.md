@@ -127,7 +127,7 @@ vault kv get kv/ansible/github
    - Click "New GitHub App"
    - Fill in the required fields:
      - Name: Ansible API
-     - Homepage URL: [https://www.example.com]
+     - Homepage URL: [http://localhost:9090](http://localhost:9090)
      - Webhook: Disable
      - Permissions:
        - Repository permissions:
