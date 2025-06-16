@@ -36,12 +36,14 @@ The application is configured using HashiCorp Vault secrets. All sensitive confi
 
 ### Required Vault Configuration
 
-1. Enable KV secrets engine:
+1 Enable KV secrets engine:
+
 ```bash
 vault secrets enable -version=2 -path=kv kv
 ```
 
-2. Create a policy for the application:
+2 Create a policy for the application:
+
 ```bash
 vault policy write ansible-policy -<<EOF
 path "kv/data/ansible/*" {
@@ -50,7 +52,8 @@ path "kv/data/ansible/*" {
 EOF
 ```
 
-3. Create an AppRole:
+3 Create an AppRole:
+
 ```bash
 vault write auth/approle/role/ansible-role \
   token_policies="ansible-policy" \
@@ -58,13 +61,15 @@ vault write auth/approle/role/ansible-role \
   token_max_ttl="4h"
 ```
 
-4. Get role ID and secret ID:
+4 Get role ID and secret ID:
+
 ```bash
 vault read auth/approle/role/ansible-role/role-id
 vault write -f auth/approle/role/ansible-role/secret-id
 ```
 
-5. Set environment variables:
+5 Set environment variables:
+
 ```bash
 export VAULT_ROLE_ID=<role-id>
 export VAULT_SECRET_ID=<secret-id>

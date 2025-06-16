@@ -97,6 +97,9 @@ func (p *JobProcessor) ProcessJobs() {
 
 		playbookPath := filepath.Join(tmpDir, job.PlaybookPath)
 		ansibleCmd := exec.Command("ansible-playbook", playbookPath, "-i", inventoryFilePath)
+		if job.Limit != "" {
+			ansibleCmd.Args = append(ansibleCmd.Args, "--limit", job.Limit)
+		}
 		ansibleCmd.Dir = tmpDir
 
 		// Create a custom writer to capture and format Ansible output
