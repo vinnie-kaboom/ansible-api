@@ -62,7 +62,10 @@ func (p *JobProcessor) ProcessJobs() {
 		cloneURL := githubapp.BuildCloneURL(token, repoPath, host)
 
 		// Log only the repository path, not the full URL with token
-		p.server.Logger.Info().Str("repository", repoPath).Msg("Cloning repository")
+		p.server.Logger.Info().
+			Str("repository", repoPath).
+			Str("clone_url", maskTokenInURL(cloneURL)).
+			Msg("Cloning repository")
 
 		// Create a custom writer to capture and format Git output
 		gitOutput := &gitOutputWriter{logger: p.server.Logger.With().Str("component", "git").Logger()}

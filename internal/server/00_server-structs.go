@@ -10,17 +10,17 @@ import (
 	"golang.org/x/time/rate"
 )
 
-// Config holds application configuration loaded from Vault or environment variables.
+// Config holds the server configuration
 type Config struct {
-	AppID          int
-	InstallationID int
-	PrivateKey     string
-	APIBaseURL     string
-	ServerPort     string
-	WorkerCount    int
-	RetentionHours int
-	TempPatterns   string
-	RateLimit      int
+	AppID          int    `json:"app_id"`
+	InstallationID int    `json:"installation_id"`
+	PrivateKey     string `json:"private_key"`
+	APIBaseURL     string `json:"api_base_url"`
+	ServerPort     string `json:"port"`
+	WorkerCount    int    `json:"worker_count"`
+	RetentionHours int    `json:"retention_hours"`
+	TempPatterns   string `json:"temp_patterns"`
+	RateLimit      int    `json:"rate_limit"`
 }
 
 // Server represents the main API server and its dependencies.

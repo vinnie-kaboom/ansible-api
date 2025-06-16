@@ -248,14 +248,18 @@ Expected output:
 2 Store GitHub configuration:
 
 ```bash
+# First, read and store the private key content
+PRIVATE_KEY=$(cat /path/to/your/private-key.pem)
+
+# Then store the GitHub configuration with the private key content
 vault kv put kv/ansible/github \
   app_id="your_app_id" \
   installation_id="your_installation_id" \
-  private_key_path="/path/to/private/key" \
+  private_key="$PRIVATE_KEY" \
   api_base_url="https://github.<yourdomain>.com/api/v3"
 ```
 
-> **Note:** `api_base_url` is required for GitHub Enterprise. If omitted, the application will default to public GitHub (`https://api.github.com`), which will cause authentication failures (401 Unauthorized) for enterprise credentials.
+> **Note:** Store the private key content directly in Vault instead of the file path. This is more secure as it keeps the private key content encrypted at rest.
 
 3 Store API configuration:
 

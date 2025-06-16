@@ -12,7 +12,6 @@ import (
 
 const (
 	jwtExpirationMinutes = 10
-	defaultAPIBaseURL    = "https://api.github.com"
 )
 
 type GithubAuthenticator interface {
@@ -34,7 +33,7 @@ func (a *DefaultAuthenticator) GetInstallationToken(config AuthConfig) (string, 
 	now := time.Now()
 	claims := jwt.MapClaims{
 		"iat": now.Unix(),
-		"exp": now.Add(10 * time.Minute).Unix(),
+		"exp": now.Add(time.Duration(jwtExpirationMinutes) * time.Minute).Unix(),
 		"iss": config.AppID,
 	}
 

@@ -32,45 +32,71 @@ go build -o ansible-api ./cmd/service
 
 ## Configuration
 
-The application is configured using environment variables or HashiCorp Vault secrets. If Vault is enabled and accessible, configuration values are loaded from Vault first, then environment variables, then defaults.
+The application is configured using HashiCorp Vault secrets. All sensitive configuration values are loaded from Vault.
 
-### Configuration Precedence
+### Required Vault Configuration
 
-1. **Vault** (if available)
-2. **Environment variables**
-3. **Built-in defaults**
+1. Enable KV secrets engine:
+```bash
+vault secrets enable -version=2 -path=kv kv
+```
+
+2. Create a policy for the application:
+```bash
+vault policy write ansible-policy -<<EOF
+path "kv/data/ansible/*" {
+  capabilities = ["read", "list"]
+}
+EOF
+```
+
+3. Create an AppRole:
+```bash
+vault write auth/approle/role/ansible-role \
+  token_policies="ansible-policy" \
+  token_ttl="1h" \
+  token_max_ttl="4h"
+```
+
+4. Get role ID and secret ID:
+```bash
+vault read auth/approle/role/ansible-role/role-id
+vault write -f auth/approle/role/ansible-role/secret-id
+```
+
+5. Set environment variables:
+```bash
+export VAULT_ROLE_ID=<role-id>
+export VAULT_SECRET_ID=<secret-id>
+```
 
 ### Required GitHub App Configuration
 
-If using Vault, the following keys must be present in the `kv/ansible/github` secret:
+The following keys must be present in the `kv/ansible/github` secret:
 
 - `app_id`: Your GitHub App ID
 - `installation_id`: Your GitHub App Installation ID
-- `private_key_path`: Path to your GitHub App private key
-- `api_base_url`: GitHub API base URL (required for GitHub Enterprise, e.g., `https://github.<yourdomain>.com/api/v3`)
+- `private_key`: Your GitHub App private key content
+- `api_base_url`: GitHub API base URL (required for GitHub Enterprise, e.g., `https://git.cce3.gpc/api/v3`)
 
-If not using Vault, set these as environment variables:
+### Optional Configuration
 
-- `GITHUB_APP_ID`: Your GitHub App ID
-- `GITHUB_INSTALLATION_ID`: Your GitHub App Installation ID
-- `GITHUB_PRIVATE_KEY_PATH`: Path to your GitHub App private key
-- `GITHUB_API_BASE_URL`: GitHub API base URL (default: `https://api.github.com`)
+The following keys can be set in the `kv/ansible/api` secret:
 
-> **Note:** For GitHub Enterprise, you must set `api_base_url` in Vault or `GITHUB_API_BASE_URL` as an environment variable to your instance URL (e.g., `https://github.<yourdomain>.com/api/v3`).
-
-Optional environment variables
-
-- `PORT`: Server port (default: 8080)
-- `WORKER_COUNT`: Number of worker goroutines (default: 4)
-- `RETENTION_HOURS`: Hours to retain temporary files (default: 24)
-- `TEMP_PATTERNS`: Comma-separated list of temporary file patterns (default: *_site.yml,*_hosts)
-- `RATE_LIMIT_REQUESTS_PER_SECOND`: Rate limit for API requests (default: 10)
+- `port`: Server port (default: 8080)
+- `worker_count`: Number of worker goroutines (default: 4)
+- `retention_hours`: Hours to retain temporary files (default: 24)
+- `temp_patterns`: Comma-separated list of temporary file patterns (default: *_site.yml,*_hosts)
+- `rate_limit`: Rate limit for API requests (default: 10)
 
 ## Running the Server
 
 ```bash
-# Using environment variables
-source .env
+# Set Vault authentication
+export VAULT_ROLE_ID=<your-role-id>
+export VAULT_SECRET_ID=<your-secret-id>
+
+# Run the server
 ./ansible-api
 ```
 
