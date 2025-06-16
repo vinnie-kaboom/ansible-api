@@ -49,8 +49,8 @@ func (c *Config) setIntValue(key string, value interface{}) {
 func (c *Config) setStringValue(key string, value interface{}) {
 	if str, ok := value.(string); ok {
 		switch key {
-		case "private_key_path":
-			c.PrivateKeyPath = str
+		case "private_key":
+			c.PrivateKey = str
 		case "api_base_url":
 			c.APIBaseURL = str
 		case "port":
@@ -95,7 +95,7 @@ func loadConfigFromEnv(config *Config) {
 	envMap := map[string]string{
 		"GITHUB_APP_ID":                  "",
 		"GITHUB_INSTALLATION_ID":         "",
-		"GITHUB_PRIVATE_KEY_PATH":        "",
+		"GITHUB_PRIVATE_KEY":             "",
 		"GITHUB_API_BASE_URL":            "",
 		"PORT":                           "",
 		"WORKER_COUNT":                   "",
@@ -116,8 +116,8 @@ func loadConfigFromEnv(config *Config) {
 	if config.InstallationID == 0 && envMap["GITHUB_INSTALLATION_ID"] != "" {
 		config.InstallationID, _ = strconv.Atoi(envMap["GITHUB_INSTALLATION_ID"])
 	}
-	if config.PrivateKeyPath == "" {
-		config.PrivateKeyPath = envMap["GITHUB_PRIVATE_KEY_PATH"]
+	if config.PrivateKey == "" {
+		config.PrivateKey = envMap["GITHUB_PRIVATE_KEY"]
 	}
 	if config.APIBaseURL == "" {
 		config.APIBaseURL = envMap["GITHUB_API_BASE_URL"]
@@ -230,7 +230,7 @@ func New() (*Server, error) {
 		RateLimiter:          rate.NewLimiter(rate.Every(time.Second), config.RateLimit),
 		GithubAppID:          config.AppID,
 		GithubInstallationID: config.InstallationID,
-		GithubPrivateKeyPath: config.PrivateKeyPath,
+		GithubPrivateKey:     config.PrivateKey,
 		GithubAPIBaseURL:     config.APIBaseURL,
 		VaultClient:          vaultClient,
 		Config:               config,

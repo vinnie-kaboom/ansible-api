@@ -5,7 +5,6 @@ import (
 	"fmt"
 	"io"
 	"net/http"
-	"os"
 	"time"
 
 	"github.com/golang-jwt/jwt/v5"
@@ -15,6 +14,14 @@ const (
 	jwtExpirationMinutes = 10
 	defaultAPIBaseURL    = "https://api.github.com"
 )
+
+// // AuthConfig holds the configuration for GitHub App authentication
+// type AuthConfig struct {
+// 	AppID          int    `json:"app_id"`
+// 	InstallationID int    `json:"installation_id"`
+// 	PrivateKey     string `json:"private_key"`
+// 	APIBaseURL     string `json:"api_base_url"`
+// }
 
 type GithubAuthenticator interface {
 	GetInstallationToken(config AuthConfig) (string, error)
@@ -28,11 +35,8 @@ func (e *AuthError) Error() string {
 
 // GetInstallationToken generates a GitHub App installation token
 func (a *DefaultAuthenticator) GetInstallationToken(config AuthConfig) (string, error) {
-	// Read the private key
-	privateKey, err := os.ReadFile(config.PrivateKeyPath)
-	if err != nil {
-		return "", fmt.Errorf("failed to read private key: %w", err)
-	}
+	// Use the private key content directly from config
+	privateKey := []byte(config.PrivateKey)
 
 	// Generate JWT
 	now := time.Now()
