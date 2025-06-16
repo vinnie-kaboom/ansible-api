@@ -12,7 +12,7 @@
 
 ## Notifications & Integrations
 - Add Slack/MS Teams/webhook notifications for job events.
-- Implement email alerts for job completion or failure.
+- Implement email alerts for job completion or failure.configconfig
 - Integrate with GitHub Checks to report playbook run status on PRs.
 
 ## Extensibility & Flexibility
