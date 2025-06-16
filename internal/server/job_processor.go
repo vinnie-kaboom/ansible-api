@@ -2,6 +2,7 @@ package server
 
 import (
 	"ansible-api/internal/githubapp"
+	"fmt"
 	"net/url"
 	"os"
 	"os/exec"
@@ -83,16 +84,41 @@ func (p *JobProcessor) ProcessJobs() {
 			continue
 		}
 
+		// Use inventory file from repository if no inventory provided in request
 		inventoryFilePath := filepath.Join(tmpDir, "inventory.ini")
-		inventoryFile, err := os.Create(inventoryFilePath)
-		if err != nil {
-			p.updateJobStatus(job, "failed", "", err.Error())
-			err := os.RemoveAll(tmpDir)
-			if err != nil {
-				p.server.Logger.Error().Err(err).Msg("Failed to remove temporary directory")
-				return
+		if job.Inventory == nil {
+			// Check if inventory file exists in repository
+			if _, err := os.Stat(inventoryFilePath); os.IsNotExist(err) {
+				p.updateJobStatus(job, "failed", "", "No inventory file found in repository and no inventory provided in request")
+				err := os.RemoveAll(tmpDir)
+				if err != nil {
+					p.server.Logger.Error().Err(err).Msg("Failed to remove temporary directory")
+					return
+				}
+				continue
 			}
-			continue
+		} else {
+			// Create inventory file from request
+			inventoryFile, err := os.Create(inventoryFilePath)
+			if err != nil {
+				p.updateJobStatus(job, "failed", "", err.Error())
+				err := os.RemoveAll(tmpDir)
+				if err != nil {
+					p.server.Logger.Error().Err(err).Msg("Failed to remove temporary directory")
+					return
+				}
+				continue
+			}
+			defer inventoryFile.Close()
+
+			// Write inventory content
+			for group, hosts := range job.Inventory {
+				fmt.Fprintf(inventoryFile, "[%s]\n", group)
+				for host, vars := range hosts {
+					fmt.Fprintf(inventoryFile, "%s %s\n", host, vars)
+				}
+				fmt.Fprintf(inventoryFile, "\n")
+			}
 		}
 
 		playbookPath := filepath.Join(tmpDir, job.PlaybookPath)

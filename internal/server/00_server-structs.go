@@ -44,7 +44,7 @@ type Server struct {
 type PlaybookRequest struct {
 	RepositoryURL string                       `json:"repository_url" validate:"required,httpsgit"`
 	PlaybookPath  string                       `json:"playbook_path" validate:"required"`
-	Inventory     map[string]map[string]string `json:"inventory" validate:"required,min=1"`
+	Inventory     map[string]map[string]string `json:"inventory"`
 	Environment   map[string]string            `json:"environment"`
 	Secrets       map[string]string            `json:"secrets"`
 	Limit         string                       `json:"limit"`
