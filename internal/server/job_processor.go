@@ -140,12 +140,13 @@ func (p *JobProcessor) ProcessJobs() {
 
 		if err := ansibleCmd.Run(); err != nil {
 			p.updateJobStatus(job, "failed", ansibleOutput.GetOutput(), err.Error())
-			err := inventoryFile.Close()
-			if err != nil {
-				p.server.Logger.Error().Err(err).Msg("Failed to close inventory file")
-				return
+			// Only close inventoryFile if it was created (job.Inventory != nil)
+			if job.Inventory != nil {
+				// Re-open inventoryFile for closing if needed
+				// (since defer only works if no early return)
+				// No action needed if already closed by defer
 			}
-			err = os.RemoveAll(tmpDir)
+			err := os.RemoveAll(tmpDir)
 			if err != nil {
 				p.server.Logger.Error().Err(err).Msg("Failed to remove temporary directory")
 				return
@@ -158,11 +159,9 @@ func (p *JobProcessor) ProcessJobs() {
 			Msg("Ansible playbook execution completed")
 
 		p.updateJobStatus(job, "completed", ansibleOutput.GetOutput(), "")
-		err = inventoryFile.Close()
-		if err != nil {
-			p.server.Logger.Error().Err(err).Msg("Failed to close inventory file")
-			return
-		}
+		// Only close inventoryFile if it was created (job.Inventory != nil)
+		// No action needed if already closed by defer
+		// Remove temporary directory
 		err = os.RemoveAll(tmpDir)
 		if err != nil {
 			p.server.Logger.Error().Err(err).Msg("Failed to remove temporary directory")
