@@ -12,16 +12,7 @@ import (
 
 const (
 	jwtExpirationMinutes = 10
-	defaultAPIBaseURL    = "https://api.github.com"
 )
-
-// // AuthConfig holds the configuration for GitHub App authentication
-// type AuthConfig struct {
-// 	AppID          int    `json:"app_id"`
-// 	InstallationID int    `json:"installation_id"`
-// 	PrivateKey     string `json:"private_key"`
-// 	APIBaseURL     string `json:"api_base_url"`
-// }
 
 type GithubAuthenticator interface {
 	GetInstallationToken(config AuthConfig) (string, error)
@@ -42,7 +33,7 @@ func (a *DefaultAuthenticator) GetInstallationToken(config AuthConfig) (string, 
 	now := time.Now()
 	claims := jwt.MapClaims{
 		"iat": now.Unix(),
-		"exp": now.Add(10 * time.Minute).Unix(),
+		"exp": now.Add(time.Duration(jwtExpirationMinutes) * time.Minute).Unix(),
 		"iss": config.AppID,
 	}
 
