@@ -84,14 +84,11 @@ func (p *JobProcessor) ProcessJobs() {
 			continue
 		}
 
-		// Use inventory file from repository if no inventory provided in request
-		inventoryFilePath := filepath.Join(tmpDir, "inventory.ini")
-		altInventoryFilePath := filepath.Join(tmpDir, "inventory", "host.ini")
+		inventoryFilePath := filepath.Join(tmpDir, "inventory", "hosts.ini")
+		fallbackInventoryFilePath := filepath.Join("inventory.ini")
 		if job.Inventory == nil {
-			// Check for inventory.ini at root
 			if _, err := os.Stat(inventoryFilePath); os.IsNotExist(err) {
-				// If not found, check for inventory/host.ini
-				if _, err := os.Stat(altInventoryFilePath); os.IsNotExist(err) {
+				if _, err := os.Stat(fallbackInventoryFilePath); os.IsNotExist(err) {
 					p.updateJobStatus(job, "failed", "", "No inventory file found in repository and no inventory provided in request")
 					err := os.RemoveAll(tmpDir)
 					if err != nil {
@@ -100,7 +97,7 @@ func (p *JobProcessor) ProcessJobs() {
 					}
 					continue
 				} else {
-					inventoryFilePath = altInventoryFilePath
+					inventoryFilePath = fallbackInventoryFilePath
 				}
 			}
 		} else {
@@ -134,7 +131,6 @@ func (p *JobProcessor) ProcessJobs() {
 		}
 		ansibleCmd.Dir = tmpDir
 
-		// Create a custom writer to capture and format Ansible output
 		ansibleOutput := &ansibleOutputWriter{logger: p.server.Logger.With().Str("component", "ansible").Logger()}
 		ansibleCmd.Stdout = ansibleOutput
 		ansibleCmd.Stderr = ansibleOutput
@@ -146,11 +142,7 @@ func (p *JobProcessor) ProcessJobs() {
 
 		if err := ansibleCmd.Run(); err != nil {
 			p.updateJobStatus(job, "failed", ansibleOutput.GetOutput(), err.Error())
-			// Only close inventoryFile if it was created (job.Inventory != nil)
 			if job.Inventory != nil {
-				// Re-open inventoryFile for closing if needed
-				// (since defer only works if no early return)
-				// No action needed if already closed by defer
 			}
 			err := os.RemoveAll(tmpDir)
 			if err != nil {
