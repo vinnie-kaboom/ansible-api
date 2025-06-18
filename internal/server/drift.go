@@ -5,10 +5,12 @@ import (
 	"crypto/sha256"
 	"encoding/hex"
 	"encoding/json"
+	"fmt"
 	"io"
 	"os"
 	"os/exec"
 	"path/filepath"
+	"strings"
 	"time"
 
 	"github.com/rs/zerolog"
@@ -20,20 +22,51 @@ type StateFile map[string]PlaybookState
 
 var stateFile = filepath.Join(os.TempDir(), "playbook_state.json")
 
-func UpdatePlaybookState(playbookPath, repo string, status string) error {
+// getRemoteCommitHash gets the current commit hash from a remote repository
+func getRemoteCommitHash(repoURL, branch string) (string, error) {
+	cmd := exec.Command("git", "ls-remote", "--heads", repoURL, branch)
+	output, err := cmd.Output()
+	if err != nil {
+		return "", err
+	}
+
+	lines := strings.Split(strings.TrimSpace(string(output)), "\n")
+	if len(lines) == 0 {
+		return "", fmt.Errorf("no output from git ls-remote")
+	}
+
+	// Parse the output: <hash>\trefs/heads/<branch>
+	parts := strings.Fields(lines[0])
+	if len(parts) < 2 {
+		return "", fmt.Errorf("unexpected output format from git ls-remote")
+	}
+
+	return parts[0], nil
+}
+
+func UpdatePlaybookState(logicalPath, fullPath, repo string, status string) error {
 	log := log.With().Str("component", "drift").Logger()
-	log.Info().Str("playbookPath", playbookPath).Msg("UpdatePlaybookState called")
-	hash, err := fileHash(playbookPath)
+	log.Info().Str("logicalPath", logicalPath).Str("fullPath", fullPath).Msg("UpdatePlaybookState called")
+	hash, err := fileHash(fullPath)
 	if err != nil {
 		log.Error().Err(err).Msg("fileHash failed in UpdatePlaybookState")
 		return err
 	}
+
+	// Get the current commit hash from the remote repository
+	commitHash, err := getRemoteCommitHash(repo, "main") // You might want to make branch configurable
+	if err != nil {
+		log.Warn().Err(err).Msg("Failed to get remote commit hash, will use empty string")
+		commitHash = ""
+	}
+
 	state, _ := loadStateFile(stateFile)
-	state[playbookPath] = PlaybookState{
-		Repo:       repo,
-		LastRun:    time.Now().UTC().Format(time.RFC3339),
-		LastHash:   hash,
-		LastStatus: status,
+	state[logicalPath] = PlaybookState{
+		Repo:           repo,
+		LastRun:        time.Now().UTC().Format(time.RFC3339),
+		LastHash:       hash,
+		LastStatus:     status,
+		PlaybookCommit: commitHash,
 	}
 	err = saveStateFile(stateFile, state)
 	if err != nil {
@@ -57,6 +90,21 @@ func DriftDetection() {
 	log.Info().Int("playbook_count", len(state)).Msg("Loaded playbooks from state file")
 	changed := false
 	for logicalPath, ps := range state {
+		// Check if the commit hash has changed
+		currentCommitHash, err := getRemoteCommitHash(ps.Repo, "main") // You might want to make branch configurable
+		if err != nil {
+			log.Warn().Str("repo", ps.Repo).Err(err).Msg("Failed to get remote commit hash, skipping drift check")
+			continue
+		}
+
+		// Skip drift check if commit hash hasn't changed
+		if ps.PlaybookCommit != "" && ps.PlaybookCommit == currentCommitHash {
+			log.Debug().Str("playbook", logicalPath).Str("commit", currentCommitHash).Msg("Commit hash unchanged, skipping drift check")
+			continue
+		}
+
+		log.Info().Str("playbook", logicalPath).Str("old_commit", ps.PlaybookCommit).Str("new_commit", currentCommitHash).Msg("Commit hash changed, running drift check")
+
 		tmpDir, err := os.MkdirTemp("", "repo-drift-")
 		if err != nil {
 			log.Error().Err(err).Msg("Failed to create temp dir for drift check")
@@ -98,7 +146,7 @@ func DriftDetection() {
 			LastRemediationStatus: remediationStatus,
 			DriftDetected:         drift,
 			LastTargets:           []string{},
-			PlaybookCommit:        "",
+			PlaybookCommit:        currentCommitHash,
 		}
 		changed = true
 		os.RemoveAll(tmpDir)
