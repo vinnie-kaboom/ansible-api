@@ -8,6 +8,7 @@ import (
 	"io"
 	"os"
 	"os/exec"
+	"path/filepath"
 	"time"
 
 	"github.com/rs/zerolog"
@@ -23,14 +24,15 @@ type PlaybookState struct {
 
 type StateFile map[string]PlaybookState
 
-const (
-	stateFile = "playbook_state.json"
-)
+var stateFile = filepath.Join(os.TempDir(), "playbook_state.json")
 
 // UpdatePlaybookState updates the state file when a playbook is run.
 func UpdatePlaybookState(playbookPath, repo string, status string) error {
+	log := log.With().Str("component", "drift").Logger()
+	log.Info().Str("playbookPath", playbookPath).Msg("UpdatePlaybookState called")
 	hash, err := fileHash(playbookPath)
 	if err != nil {
+		log.Error().Err(err).Msg("fileHash failed in UpdatePlaybookState")
 		return err
 	}
 	state, _ := loadStateFile(stateFile)
@@ -40,7 +42,13 @@ func UpdatePlaybookState(playbookPath, repo string, status string) error {
 		LastHash:   hash,
 		LastStatus: status,
 	}
-	return saveStateFile(stateFile, state)
+	err = saveStateFile(stateFile, state)
+	if err != nil {
+		log.Error().Err(err).Msg("saveStateFile failed in UpdatePlaybookState")
+	} else {
+		log.Info().Str("stateFile", stateFile).Msg("State file updated successfully")
+	}
+	return err
 }
 
 // RemovePlaybookState removes a playbook entry from the state file.
@@ -53,9 +61,12 @@ func RemovePlaybookState(playbookPath string) error {
 // DriftDetection checks for drift only for playbooks present in the state file.
 func DriftDetection() {
 	log := log.With().Str("component", "drift").Logger()
+	log.Info().Msg("DriftDetection tick")
 	state, _ := loadStateFile(stateFile)
+	log.Info().Int("playbook_count", len(state)).Msg("Loaded playbooks from state file")
 	changed := false
 	for pb := range state {
+		log.Info().Str("playbook", pb).Msg("Checking playbook for drift")
 		if _, err := os.Stat(pb); os.IsNotExist(err) {
 			log.Warn().Str("playbook", pb).Msg("Playbook no longer exists, removing from state file")
 			RemovePlaybookState(pb)

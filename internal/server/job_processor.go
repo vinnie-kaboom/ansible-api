@@ -135,15 +135,10 @@ func (p *JobProcessor) ProcessJobs() {
 		ansibleCmd.Stdout = ansibleOutput
 		ansibleCmd.Stderr = ansibleOutput
 
-		p.server.Logger.Info().
-			Str("playbook", job.PlaybookPath).
-			Str("inventory", inventoryFilePath).
-			Msg("Executing Ansible playbook")
-
 		if err := ansibleCmd.Run(); err != nil {
 			p.updateJobStatus(job, "failed", ansibleOutput.GetOutput(), err.Error())
 			// Record failed state
-			_ = UpdatePlaybookState(job.PlaybookPath, job.RepositoryURL, "failed")
+			_ = UpdatePlaybookState(playbookPath, job.RepositoryURL, "failed")
 			if job.Inventory != nil {
 			}
 			err := os.RemoveAll(tmpDir)
@@ -160,10 +155,7 @@ func (p *JobProcessor) ProcessJobs() {
 
 		p.updateJobStatus(job, "completed", ansibleOutput.GetOutput(), "")
 		// Record completed state
-		_ = UpdatePlaybookState(job.PlaybookPath, job.RepositoryURL, "completed")
-		// Only close inventoryFile if it was created (job.Inventory != nil)
-		// No action needed if already closed by defer
-		// Remove temporary directory
+		_ = UpdatePlaybookState(playbookPath, job.RepositoryURL, "completed")
 		err = os.RemoveAll(tmpDir)
 		if err != nil {
 			p.server.Logger.Error().Err(err).Msg("Failed to remove temporary directory")
