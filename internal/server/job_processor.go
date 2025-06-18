@@ -142,6 +142,8 @@ func (p *JobProcessor) ProcessJobs() {
 
 		if err := ansibleCmd.Run(); err != nil {
 			p.updateJobStatus(job, "failed", ansibleOutput.GetOutput(), err.Error())
+			// Record failed state
+			_ = UpdatePlaybookState(job.PlaybookPath, job.RepositoryURL, "failed")
 			if job.Inventory != nil {
 			}
 			err := os.RemoveAll(tmpDir)
@@ -157,6 +159,8 @@ func (p *JobProcessor) ProcessJobs() {
 			Msg("Ansible playbook execution completed")
 
 		p.updateJobStatus(job, "completed", ansibleOutput.GetOutput(), "")
+		// Record completed state
+		_ = UpdatePlaybookState(job.PlaybookPath, job.RepositoryURL, "completed")
 		// Only close inventoryFile if it was created (job.Inventory != nil)
 		// No action needed if already closed by defer
 		// Remove temporary directory

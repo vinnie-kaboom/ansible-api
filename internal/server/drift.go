@@ -1,7 +1,6 @@
 package server
 
 import (
-	"bufio"
 	"bytes"
 	"crypto/sha256"
 	"encoding/hex"
@@ -9,7 +8,6 @@ import (
 	"io"
 	"os"
 	"os/exec"
-	"strings"
 	"time"
 
 	"github.com/rs/zerolog"
@@ -17,6 +15,7 @@ import (
 )
 
 type PlaybookState struct {
+	Repo       string `json:"repo"`
 	LastRun    string `json:"last_run"`
 	LastHash   string `json:"last_hash"`
 	LastStatus string `json:"last_status"`
@@ -25,42 +24,55 @@ type PlaybookState struct {
 type StateFile map[string]PlaybookState
 
 const (
-	playbookListFile = "playbooks.list"
-	stateFile        = "playbook_state.json"
-	inventoryFile    = "hosts.ini"
+	stateFile = "playbook_state.json"
 )
 
-func StartDriftDetection() {
-	go func() {
-		ticker := time.NewTicker(5 * time.Minute)
-		defer ticker.Stop()
-		for {
-			checkAndRemediateDrift()
-			<-ticker.C
-		}
-	}()
-}
-
-func checkAndRemediateDrift() {
-	log := log.With().Str("component", "drift").Logger()
-	playbooks, err := getPlaybookList(playbookListFile)
+// UpdatePlaybookState updates the state file when a playbook is run.
+func UpdatePlaybookState(playbookPath, repo string, status string) error {
+	hash, err := fileHash(playbookPath)
 	if err != nil {
-		log.Error().Err(err).Msg("Failed to read playbook list")
-		return
+		return err
 	}
 	state, _ := loadStateFile(stateFile)
+	state[playbookPath] = PlaybookState{
+		Repo:       repo,
+		LastRun:    time.Now().UTC().Format(time.RFC3339),
+		LastHash:   hash,
+		LastStatus: status,
+	}
+	return saveStateFile(stateFile, state)
+}
+
+// RemovePlaybookState removes a playbook entry from the state file.
+func RemovePlaybookState(playbookPath string) error {
+	state, _ := loadStateFile(stateFile)
+	delete(state, playbookPath)
+	return saveStateFile(stateFile, state)
+}
+
+// DriftDetection checks for drift only for playbooks present in the state file.
+func DriftDetection() {
+	log := log.With().Str("component", "drift").Logger()
+	state, _ := loadStateFile(stateFile)
 	changed := false
-	for _, pb := range playbooks {
+	for pb := range state {
+		if _, err := os.Stat(pb); os.IsNotExist(err) {
+			log.Warn().Str("playbook", pb).Msg("Playbook no longer exists, removing from state file")
+			RemovePlaybookState(pb)
+			changed = true
+			continue
+		}
 		hash, err := fileHash(pb)
 		if err != nil {
 			log.Error().Str("playbook", pb).Err(err).Msg("Failed to hash playbook")
 			continue
 		}
-		ps, exists := state[pb]
-		if !exists || ps.LastHash != hash {
-			log.Info().Str("playbook", pb).Msg("New or changed playbook detected, running drift check...")
+		ps := state[pb]
+		if ps.LastHash != hash {
+			log.Info().Str("playbook", pb).Msg("Playbook changed, running drift check...")
 			status := runAnsibleCheck(pb, log)
 			state[pb] = PlaybookState{
+				Repo:       ps.Repo,
 				LastRun:    time.Now().UTC().Format(time.RFC3339),
 				LastHash:   hash,
 				LastStatus: status,
@@ -71,23 +83,6 @@ func checkAndRemediateDrift() {
 	if changed {
 		saveStateFile(stateFile, state)
 	}
-}
-
-func getPlaybookList(filename string) ([]string, error) {
-	file, err := os.Open(filename)
-	if err != nil {
-		return nil, err
-	}
-	defer file.Close()
-	var playbooks []string
-	scanner := bufio.NewScanner(file)
-	for scanner.Scan() {
-		line := strings.TrimSpace(scanner.Text())
-		if line != "" && !strings.HasPrefix(line, "#") {
-			playbooks = append(playbooks, line)
-		}
-	}
-	return playbooks, scanner.Err()
 }
 
 func fileHash(filename string) (string, error) {
@@ -132,7 +127,7 @@ func saveStateFile(filename string, state StateFile) error {
 }
 
 func runAnsibleCheck(playbook string, log zerolog.Logger) string {
-	cmd := exec.Command("ansible-playbook", "-i", inventoryFile, playbook, "--check", "--diff")
+	cmd := exec.Command("ansible-playbook", playbook, "--check", "--diff")
 	output, err := cmd.CombinedOutput()
 	if err != nil {
 		log.Error().Str("playbook", playbook).Err(err).Msg("Error running Ansible check mode")
@@ -148,11 +143,23 @@ func runAnsibleCheck(playbook string, log zerolog.Logger) string {
 }
 
 func remediateDrift(playbook string, log zerolog.Logger) {
-	cmd := exec.Command("ansible-playbook", "-i", inventoryFile, playbook)
+	cmd := exec.Command("ansible-playbook", playbook)
 	output, err := cmd.CombinedOutput()
 	if err != nil {
 		log.Error().Str("playbook", playbook).Err(err).Msg("Error running Ansible remediation")
 	} else {
 		log.Info().Str("playbook", playbook).Msgf("Ansible remediation output:\n%s", string(output))
 	}
+}
+
+// StartDriftDetection launches a goroutine that checks for drift every hour and triggers remediation if needed.
+func StartDriftDetection() {
+	go func() {
+		ticker := time.NewTicker(1 * time.Hour)
+		defer ticker.Stop()
+		for {
+			DriftDetection()
+			<-ticker.C
+		}
+	}()
 }

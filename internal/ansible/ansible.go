@@ -47,7 +47,6 @@ func NewClient(vaultClient *vault.VaultClient) (*Client, error) {
 		return nil, fmt.Errorf("failed to close temporary file: %v", err)
 	}
 
-	// Set correct permissions
 	if err := os.Chmod(tmpFile.Name(), 0600); err != nil {
 		err := os.Remove(tmpFile.Name())
 		if err != nil {
