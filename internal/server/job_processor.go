@@ -138,7 +138,8 @@ func (p *JobProcessor) ProcessJobs() {
 		if err := ansibleCmd.Run(); err != nil {
 			p.updateJobStatus(job, "failed", ansibleOutput.GetOutput(), err.Error())
 			// Record failed state
-			_ = UpdatePlaybookState(playbookPath, job.RepositoryURL, "failed")
+			logicalPlaybookPath := job.PlaybookPath // This is already relative to repo root
+			_ = UpdatePlaybookState(logicalPlaybookPath, job.RepositoryURL, "failed")
 			if job.Inventory != nil {
 			}
 			err := os.RemoveAll(tmpDir)
@@ -155,7 +156,8 @@ func (p *JobProcessor) ProcessJobs() {
 
 		p.updateJobStatus(job, "completed", ansibleOutput.GetOutput(), "")
 		// Record completed state
-		_ = UpdatePlaybookState(playbookPath, job.RepositoryURL, "completed")
+		logicalPlaybookPath := job.PlaybookPath // This is already relative to repo root
+		_ = UpdatePlaybookState(logicalPlaybookPath, job.RepositoryURL, "completed")
 		err = os.RemoveAll(tmpDir)
 		if err != nil {
 			p.server.Logger.Error().Err(err).Msg("Failed to remove temporary directory")
