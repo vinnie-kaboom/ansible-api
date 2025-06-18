@@ -13,6 +13,7 @@ import (
 
 	"github.com/rs/zerolog"
 	"github.com/rs/zerolog/log"
+	"gopkg.in/src-d/go-git.v4"
 )
 
 type StateFile map[string]PlaybookState
@@ -55,22 +56,39 @@ func DriftDetection() {
 	state, _ := loadStateFile(stateFile)
 	log.Info().Int("playbook_count", len(state)).Msg("Loaded playbooks from state file")
 	changed := false
-	for pb := range state {
-		log.Info().Str("playbook", pb).Msg("Running drift check (Ansible check mode)...")
-		if _, err := os.Stat(pb); os.IsNotExist(err) {
-			log.Warn().Str("playbook", pb).Msg("Playbook no longer exists, removing from state file")
-			RemovePlaybookState(pb)
-			changed = true
-			continue
-		}
-		hash, err := fileHash(pb)
+	for logicalPath, ps := range state {
+		tmpDir, err := os.MkdirTemp("", "repo-drift-")
 		if err != nil {
-			log.Error().Str("playbook", pb).Err(err).Msg("Failed to hash playbook")
+			log.Error().Err(err).Msg("Failed to create temp dir for drift check")
 			continue
 		}
-		ps := state[pb]
-		output, drift, remediationStatus, remediationTime := runAnsibleCheckWithOutput(pb, log)
-		state[pb] = PlaybookState{
+		defer os.RemoveAll(tmpDir)
+
+		log.Info().Str("repo", ps.Repo).Msg("Cloning repo for drift check")
+		_, err = git.PlainClone(tmpDir, false, &git.CloneOptions{
+			URL: ps.Repo,
+		})
+		if err != nil {
+			log.Error().Err(err).Msg("Failed to clone repo for drift check")
+			os.RemoveAll(tmpDir)
+			continue
+		}
+
+		playbookFullPath := filepath.Join(tmpDir, logicalPath)
+		log.Info().Str("playbook", playbookFullPath).Msg("Running drift check (Ansible check mode)...")
+		if _, err := os.Stat(playbookFullPath); os.IsNotExist(err) {
+			log.Warn().Str("playbook", playbookFullPath).Msg("Playbook no longer exists in repo, skipping drift check")
+			os.RemoveAll(tmpDir)
+			continue
+		}
+		hash, err := fileHash(playbookFullPath)
+		if err != nil {
+			log.Error().Str("playbook", playbookFullPath).Err(err).Msg("Failed to hash playbook")
+			os.RemoveAll(tmpDir)
+			continue
+		}
+		output, drift, remediationStatus, remediationTime := runAnsibleCheckWithOutput(playbookFullPath, log)
+		state[logicalPath] = PlaybookState{
 			Repo:                  ps.Repo,
 			LastRun:               time.Now().UTC().Format(time.RFC3339),
 			LastHash:              hash,
@@ -83,6 +101,7 @@ func DriftDetection() {
 			PlaybookCommit:        "",
 		}
 		changed = true
+		os.RemoveAll(tmpDir)
 	}
 	if changed {
 		saveStateFile(stateFile, state)
