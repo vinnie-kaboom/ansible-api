@@ -10,7 +10,6 @@ import (
 	"golang.org/x/time/rate"
 )
 
-// Config holds the server configuration
 type Config struct {
 	AppID          int    `json:"app_id"`
 	InstallationID int    `json:"installation_id"`
@@ -23,7 +22,6 @@ type Config struct {
 	RateLimit      int    `json:"rate_limit"`
 }
 
-// Server represents the main API server and its dependencies.
 type Server struct {
 	Router               *gin.Engine
 	Logger               zerolog.Logger
@@ -63,4 +61,17 @@ type Job struct {
 	RetryCount    int                          `json:"retry_count"`
 	TargetHosts   string                       `json:"target_hosts"`
 	Inventory     map[string]map[string]string `json:"inventory"`
+}
+
+type PlaybookState struct {
+	Repo                  string   `json:"repo"`
+	LastRun               string   `json:"last_run"`
+	LastHash              string   `json:"last_hash"`
+	LastStatus            string   `json:"last_status"`
+	LastCheckOutput       string   `json:"last_check_output"`
+	LastRemediation       string   `json:"last_remediation"`
+	LastRemediationStatus string   `json:"last_remediation_status"`
+	DriftDetected         bool     `json:"drift_detected"`
+	LastTargets           []string `json:"last_targets"`
+	PlaybookCommit        string   `json:"playbook_commit"`
 }

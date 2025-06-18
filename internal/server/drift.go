@@ -15,18 +15,10 @@ import (
 	"github.com/rs/zerolog/log"
 )
 
-type PlaybookState struct {
-	Repo       string `json:"repo"`
-	LastRun    string `json:"last_run"`
-	LastHash   string `json:"last_hash"`
-	LastStatus string `json:"last_status"`
-}
-
 type StateFile map[string]PlaybookState
 
 var stateFile = filepath.Join(os.TempDir(), "playbook_state.json")
 
-// UpdatePlaybookState updates the state file when a playbook is run.
 func UpdatePlaybookState(playbookPath, repo string, status string) error {
 	log := log.With().Str("component", "drift").Logger()
 	log.Info().Str("playbookPath", playbookPath).Msg("UpdatePlaybookState called")
@@ -51,14 +43,12 @@ func UpdatePlaybookState(playbookPath, repo string, status string) error {
 	return err
 }
 
-// RemovePlaybookState removes a playbook entry from the state file.
 func RemovePlaybookState(playbookPath string) error {
 	state, _ := loadStateFile(stateFile)
 	delete(state, playbookPath)
 	return saveStateFile(stateFile, state)
 }
 
-// DriftDetection checks for drift only for playbooks present in the state file.
 func DriftDetection() {
 	log := log.With().Str("component", "drift").Logger()
 	log.Info().Msg("DriftDetection tick")
@@ -66,7 +56,7 @@ func DriftDetection() {
 	log.Info().Int("playbook_count", len(state)).Msg("Loaded playbooks from state file")
 	changed := false
 	for pb := range state {
-		log.Info().Str("playbook", pb).Msg("Checking playbook for drift")
+		log.Info().Str("playbook", pb).Msg("Running drift check (Ansible check mode)...")
 		if _, err := os.Stat(pb); os.IsNotExist(err) {
 			log.Warn().Str("playbook", pb).Msg("Playbook no longer exists, removing from state file")
 			RemovePlaybookState(pb)
@@ -79,17 +69,20 @@ func DriftDetection() {
 			continue
 		}
 		ps := state[pb]
-		if ps.LastHash != hash {
-			log.Info().Str("playbook", pb).Msg("Playbook changed, running drift check...")
-			status := runAnsibleCheck(pb, log)
-			state[pb] = PlaybookState{
-				Repo:       ps.Repo,
-				LastRun:    time.Now().UTC().Format(time.RFC3339),
-				LastHash:   hash,
-				LastStatus: status,
-			}
-			changed = true
+		output, drift, remediationStatus, remediationTime := runAnsibleCheckWithOutput(pb, log)
+		state[pb] = PlaybookState{
+			Repo:                  ps.Repo,
+			LastRun:               time.Now().UTC().Format(time.RFC3339),
+			LastHash:              hash,
+			LastStatus:            remediationStatus,
+			LastCheckOutput:       output,
+			LastRemediation:       remediationTime,
+			LastRemediationStatus: remediationStatus,
+			DriftDetected:         drift,
+			LastTargets:           []string{},
+			PlaybookCommit:        "",
 		}
+		changed = true
 	}
 	if changed {
 		saveStateFile(stateFile, state)
@@ -114,7 +107,7 @@ func loadStateFile(filename string) (StateFile, error) {
 	f, err := os.Open(filename)
 	if err != nil {
 		if os.IsNotExist(err) {
-			return state, nil // empty state
+			return state, nil
 		}
 		return nil, err
 	}
@@ -137,33 +130,35 @@ func saveStateFile(filename string, state StateFile) error {
 	return enc.Encode(state)
 }
 
-func runAnsibleCheck(playbook string, log zerolog.Logger) string {
+func runAnsibleCheckWithOutput(playbook string, log zerolog.Logger) (string, bool, string, string) {
 	cmd := exec.Command("ansible-playbook", playbook, "--check", "--diff")
-	output, err := cmd.CombinedOutput()
+	outputBytes, err := cmd.CombinedOutput()
+	output := string(outputBytes)
 	if err != nil {
 		log.Error().Str("playbook", playbook).Err(err).Msg("Error running Ansible check mode")
-		return "error"
+		return output, false, "error", ""
 	}
-	if bytes.Contains(output, []byte("changed=")) {
+	if bytes.Contains(outputBytes, []byte("changed=")) {
 		log.Warn().Str("playbook", playbook).Msg("Drift detected! Running Ansible remediation...")
-		remediateDrift(playbook, log)
-		return "drift"
+		remediationStatus, remediationTime := remediateDriftWithStatus(playbook, log)
+		return output, true, remediationStatus, remediationTime
 	}
 	log.Info().Str("playbook", playbook).Msg("No drift detected.")
-	return "ok"
+	return output, false, "ok", ""
 }
 
-func remediateDrift(playbook string, log zerolog.Logger) {
+func remediateDriftWithStatus(playbook string, log zerolog.Logger) (string, string) {
 	cmd := exec.Command("ansible-playbook", playbook)
 	output, err := cmd.CombinedOutput()
 	if err != nil {
 		log.Error().Str("playbook", playbook).Err(err).Msg("Error running Ansible remediation")
+		return "error", time.Now().UTC().Format(time.RFC3339)
 	} else {
 		log.Info().Str("playbook", playbook).Msgf("Ansible remediation output:\n%s", string(output))
+		return "ok", time.Now().UTC().Format(time.RFC3339)
 	}
 }
 
-// StartDriftDetection launches a goroutine that checks for drift every hour and triggers remediation if needed.
 func StartDriftDetection() {
 	go func() {
 		ticker := time.NewTicker(1 * time.Hour)
