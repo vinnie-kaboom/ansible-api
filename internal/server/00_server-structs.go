@@ -74,4 +74,5 @@ type PlaybookState struct {
 	DriftDetected         bool     `json:"drift_detected"`
 	LastTargets           []string `json:"last_targets"`
 	PlaybookCommit        string   `json:"playbook_commit"`
+	TargetHosts           string   `json:"target_hosts"`
 }
