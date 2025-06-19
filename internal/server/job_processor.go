@@ -133,7 +133,7 @@ func (p *JobProcessor) ProcessJobs() {
 			p.updateJobStatus(job, "failed", ansibleOutput.GetOutput(), err.Error())
 			// Record failed state
 			logicalPlaybookPath := job.PlaybookPath // This is already relative to repo root
-			_ = UpdatePlaybookState(logicalPlaybookPath, playbookPath, job.RepositoryURL, "failed")
+			_ = UpdatePlaybookState(p.server, logicalPlaybookPath, playbookPath, job.RepositoryURL, "failed")
 			if job.Inventory != nil {
 			}
 			err := os.RemoveAll(tmpDir)
@@ -151,7 +151,7 @@ func (p *JobProcessor) ProcessJobs() {
 		p.updateJobStatus(job, "completed", ansibleOutput.GetOutput(), "")
 		// Record completed state
 		logicalPlaybookPath := job.PlaybookPath // This is already relative to repo root
-		_ = UpdatePlaybookState(logicalPlaybookPath, playbookPath, job.RepositoryURL, "completed")
+		_ = UpdatePlaybookState(p.server, logicalPlaybookPath, playbookPath, job.RepositoryURL, "completed")
 		err = os.RemoveAll(tmpDir)
 		if err != nil {
 			p.server.Logger.Error().Err(err).Msg("Failed to remove temporary directory")
@@ -195,7 +195,7 @@ func maskTokenInURL(cloneURL string) string {
 func extractHost(repoURL string) string {
 	u, err := url.Parse(repoURL)
 	if err != nil {
-		return "github.com" // fallback to github.com if parsing fails
+		return "github.com"
 	}
 	return u.Host
 }

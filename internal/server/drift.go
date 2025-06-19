@@ -1,6 +1,7 @@
 package server
 
 import (
+	"ansible-api/internal/githubapp"
 	"bytes"
 	"crypto/sha256"
 	"encoding/hex"
@@ -22,12 +23,29 @@ type StateFile map[string]PlaybookState
 
 var stateFile = filepath.Join(os.TempDir(), "playbook_state.json")
 
-// getRemoteCommitHash gets the current commit hash from a remote repository
-func getRemoteCommitHash(repoURL, branch string) (string, error) {
-	cmd := exec.Command("git", "ls-remote", "--heads", repoURL, branch)
+// getRemoteCommitHash gets the current commit hash from a remote repository using GitHub App authentication
+func getRemoteCommitHash(server *Server, repoURL, branch string) (string, error) {
+	// Get GitHub App token
+	token, err := (&githubapp.DefaultAuthenticator{}).GetInstallationToken(githubapp.AuthConfig{
+		AppID:          server.GithubAppID,
+		InstallationID: server.GithubInstallationID,
+		PrivateKey:     server.GithubPrivateKey,
+		APIBaseURL:     server.GithubAPIBaseURL,
+	})
+	if err != nil {
+		return "", fmt.Errorf("failed to authenticate with GitHub: %w", err)
+	}
+
+	// Build authenticated clone URL
+	repoPath := extractRepoPath(repoURL)
+	host := extractHost(repoURL)
+	cloneURL := githubapp.BuildCloneURL(token, repoPath, host)
+
+	// Use git ls-remote with the authenticated URL
+	cmd := exec.Command("git", "ls-remote", "--heads", cloneURL, branch)
 	output, err := cmd.Output()
 	if err != nil {
-		return "", err
+		return "", fmt.Errorf("git ls-remote failed: %w", err)
 	}
 
 	lines := strings.Split(strings.TrimSpace(string(output)), "\n")
@@ -44,7 +62,7 @@ func getRemoteCommitHash(repoURL, branch string) (string, error) {
 	return parts[0], nil
 }
 
-func UpdatePlaybookState(logicalPath, fullPath, repo string, status string) error {
+func UpdatePlaybookState(server *Server, logicalPath, fullPath, repo string, status string) error {
 	log := log.With().Str("component", "drift").Logger()
 	log.Info().Str("logicalPath", logicalPath).Str("fullPath", fullPath).Msg("UpdatePlaybookState called")
 	hash, err := fileHash(fullPath)
@@ -54,7 +72,7 @@ func UpdatePlaybookState(logicalPath, fullPath, repo string, status string) erro
 	}
 
 	// Get the current commit hash from the remote repository
-	commitHash, err := getRemoteCommitHash(repo, "main") // You might want to make branch configurable
+	commitHash, err := getRemoteCommitHash(server, repo, "main") // You might want to make branch configurable
 	if err != nil {
 		log.Warn().Err(err).Msg("Failed to get remote commit hash, will use empty string")
 		commitHash = ""
@@ -83,7 +101,7 @@ func RemovePlaybookState(playbookPath string) error {
 	return saveStateFile(stateFile, state)
 }
 
-func DriftDetection() {
+func DriftDetection(server *Server) {
 	log := log.With().Str("component", "drift").Logger()
 	log.Info().Msg("DriftDetection tick")
 	state, _ := loadStateFile(stateFile)
@@ -91,7 +109,7 @@ func DriftDetection() {
 	changed := false
 	for logicalPath, ps := range state {
 		// Check if the commit hash has changed
-		currentCommitHash, err := getRemoteCommitHash(ps.Repo, "main") // You might want to make branch configurable
+		currentCommitHash, err := getRemoteCommitHash(server, ps.Repo, "main") // You might want to make branch configurable
 		if err != nil {
 			log.Warn().Str("repo", ps.Repo).Err(err).Msg("Failed to get remote commit hash, skipping drift check")
 			continue
@@ -226,13 +244,17 @@ func remediateDriftWithStatus(playbook string, log zerolog.Logger) (string, stri
 	}
 }
 
-func StartDriftDetection() {
+func StartDriftDetection(server *Server) {
 	go func() {
-		ticker := time.NewTicker(1 * time.Hour)
+		// Run first drift detection immediately
+		DriftDetection(server)
+
+		// Then run every hour
+		ticker := time.NewTicker(3 * time.Minute)
 		defer ticker.Stop()
 		for {
-			DriftDetection()
 			<-ticker.C
+			DriftDetection(server)
 		}
 	}()
 }

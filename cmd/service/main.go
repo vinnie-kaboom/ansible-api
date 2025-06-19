@@ -35,7 +35,7 @@ func main() {
 		serverErrors <- srv.Start()
 	}()
 
-	server.StartDriftDetection()
+	server.StartDriftDetection(srv)
 
 	shutdown := make(chan os.Signal, 1)
 	signal.Notify(shutdown, os.Interrupt, syscall.SIGTERM)
