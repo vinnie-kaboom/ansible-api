@@ -52,7 +52,6 @@ func (c *Config) SetStringValue(key string, value interface{}) {
 	}
 }
 
-
 // NewConfigManager creates a new configuration manager
 func NewConfigManager() *ConfigManager {
 	return &ConfigManager{
@@ -281,7 +280,6 @@ func (cm *ConfigManager) setStringDefault(config *Config, key string, value stri
 	}
 }
 
-
 // NewServerBuilder creates a new server builder
 func NewServerBuilder() *ServerBuilder {
 	return &ServerBuilder{
@@ -385,7 +383,6 @@ func (sb *ServerBuilder) initializeRouter() *gin.Engine {
 	return router
 }
 
-
 // NewRequestValidator creates a new request validator
 func NewRequestValidator() *RequestValidator {
 	v := validator.New()
@@ -416,6 +413,9 @@ func New() (*Server, error) {
 // Server methods
 func (s *Server) registerRoutes() {
 	r := s.Router
+
+	// Add request logging middleware
+	r.Use(s.requestLogger())
 	r.Use(gin.Logger())
 	r.Use(gin.Recovery())
 
@@ -426,27 +426,95 @@ func (s *Server) registerRoutes() {
 	r.POST("/api/jobs/:job_id/retry", s.handleJobRetry)
 }
 
+// requestLogger middleware logs all HTTP requests with structured data
+func (s *Server) requestLogger() gin.HandlerFunc {
+	return gin.LoggerWithFormatter(func(param gin.LogFormatterParams) string {
+		// Create structured log entry
+		s.Logger.Info().
+			Str("method", param.Method).
+			Str("path", param.Path).
+			Str("remote_addr", param.ClientIP).
+			Str("user_agent", param.Request.UserAgent()).
+			Int("status", param.StatusCode).
+			Int("body_size", param.BodySize).
+			Dur("latency", param.Latency).
+			Str("error", param.ErrorMessage).
+			Msg("HTTP request")
+
+		// Return empty string since we're handling logging ourselves
+		return ""
+	})
+}
+
 func (s *Server) handleHealth(c *gin.Context) {
+	startTime := time.Now()
+	defer func() {
+		duration := time.Since(startTime)
+		s.Logger.Debug().
+			Str("endpoint", "/api/health").
+			Str("method", c.Request.Method).
+			Str("remote_addr", c.ClientIP()).
+			Dur("duration", duration).
+			Msg("Health check completed")
+	}()
+
 	c.JSON(200, gin.H{"status": "healthy", "version": "1.0.0"})
 }
 
 func (s *Server) handlePlaybookRun(c *gin.Context) {
+	startTime := time.Now()
+	requestID := fmt.Sprintf("req-%d", time.Now().UnixNano())
+
+	// Create a logger with request context
+	reqLogger := s.Logger.With().
+		Str("request_id", requestID).
+		Str("endpoint", "/api/playbook/run").
+		Str("method", c.Request.Method).
+		Str("remote_addr", c.ClientIP()).
+		Str("user_agent", c.Request.UserAgent()).
+		Logger()
+
+	defer func() {
+		duration := time.Since(startTime)
+		reqLogger.Info().
+			Dur("duration", duration).
+			Msg("Playbook run request completed")
+	}()
+
+	reqLogger.Info().Msg("Received playbook run request")
+
 	if !s.RateLimiter.Allow() {
+		reqLogger.Warn().Msg("Rate limit exceeded")
 		c.JSON(429, gin.H{"error": "Too many requests"})
 		return
 	}
 
 	var req PlaybookRequest
 	if err := c.ShouldBindJSON(&req); err != nil {
-		s.Logger.Error().Err(err).Msg("Invalid request body")
+		reqLogger.Error().
+			Err(err).
+			Str("content_type", c.GetHeader("Content-Type")).
+			Int64("content_length", c.Request.ContentLength).
+			Msg("Invalid request body")
 		c.JSON(400, gin.H{"error": "Invalid request body"})
 		return
 	}
 
+	reqLogger.Info().
+		Str("repository_url", req.RepositoryURL).
+		Str("playbook_path", req.PlaybookPath).
+		Str("target_hosts", req.TargetHosts).
+		Int("inventory_groups", len(req.Inventory)).
+		Msg("Request validation passed")
+
 	// Validate request
 	validator := NewRequestValidator()
 	if err := validator.ValidatePlaybookRequest(&req); err != nil {
-		s.Logger.Error().Err(err).Msg("Validation failed")
+		reqLogger.Error().
+			Err(err).
+			Str("repository_url", req.RepositoryURL).
+			Str("playbook_path", req.PlaybookPath).
+			Msg("Request validation failed")
 		c.JSON(400, gin.H{"error": err.Error()})
 		return
 	}
@@ -455,12 +523,25 @@ func (s *Server) handlePlaybookRun(c *gin.Context) {
 	job := s.createJob(&req)
 	s.queueJob(job)
 
+	reqLogger.Info().
+		Str("job_id", job.ID).
+		Str("repository_url", req.RepositoryURL).
+		Str("playbook_path", req.PlaybookPath).
+		Msg("Job queued successfully")
+
 	c.JSON(202, gin.H{"status": "queued", "job_id": job.ID})
 }
 
 func (s *Server) createJob(req *PlaybookRequest) *Job {
+	jobID := fmt.Sprintf("job-%d", time.Now().UnixNano())
+	s.Logger.Debug().
+		Str("job_id", jobID).
+		Str("repository_url", req.RepositoryURL).
+		Str("playbook_path", req.PlaybookPath).
+		Msg("Creating new job")
+
 	return &Job{
-		ID:            fmt.Sprintf("job-%d", time.Now().UnixNano()),
+		ID:            jobID,
 		Status:        "queued",
 		StartTime:     time.Now(),
 		RepositoryURL: req.RepositoryURL,
@@ -473,53 +554,132 @@ func (s *Server) createJob(req *PlaybookRequest) *Job {
 func (s *Server) queueJob(job *Job) {
 	s.JobMutex.Lock()
 	s.Jobs[job.ID] = job
+	jobCount := len(s.Jobs)
 	s.JobMutex.Unlock()
 
 	s.JobQueue <- job
+
+	s.Logger.Debug().
+		Str("job_id", job.ID).
+		Int("total_jobs", jobCount).
+		Int("queue_size", len(s.JobQueue)).
+		Msg("Job added to queue")
 }
 
 func (s *Server) handleJobs(c *gin.Context) {
+	startTime := time.Now()
+	defer func() {
+		duration := time.Since(startTime)
+		s.Logger.Debug().
+			Str("endpoint", "/api/jobs").
+			Str("method", c.Request.Method).
+			Str("remote_addr", c.ClientIP()).
+			Dur("duration", duration).
+			Msg("Jobs list request completed")
+	}()
+
 	s.JobMutex.RLock()
-	defer s.JobMutex.RUnlock()
-	c.JSON(200, s.Jobs)
+	jobs := s.Jobs
+	jobCount := len(jobs)
+	s.JobMutex.RUnlock()
+
+	s.Logger.Debug().
+		Int("job_count", jobCount).
+		Msg("Retrieved jobs list")
+
+	c.JSON(200, jobs)
 }
 
 func (s *Server) handleJobStatus(c *gin.Context) {
 	jobID := c.Param("job_id")
+	startTime := time.Now()
+
+	reqLogger := s.Logger.With().
+		Str("job_id", jobID).
+		Str("endpoint", "/api/jobs/:job_id").
+		Str("method", c.Request.Method).
+		Str("remote_addr", c.ClientIP()).
+		Logger()
+
+	defer func() {
+		duration := time.Since(startTime)
+		reqLogger.Debug().Dur("duration", duration).Msg("Job status request completed")
+	}()
+
+	reqLogger.Debug().Msg("Job status request received")
 
 	s.JobMutex.RLock()
 	job, exists := s.Jobs[jobID]
 	s.JobMutex.RUnlock()
 
 	if !exists {
+		reqLogger.Warn().Msg("Job not found")
 		c.JSON(404, gin.H{"error": "Job not found"})
 		return
 	}
+
+	reqLogger.Debug().
+		Str("job_status", job.Status).
+		Time("start_time", job.StartTime).
+		Msg("Job status retrieved")
 
 	c.JSON(200, job)
 }
 
 func (s *Server) handleJobRetry(c *gin.Context) {
 	jobID := c.Param("job_id")
+	startTime := time.Now()
+
+	reqLogger := s.Logger.With().
+		Str("original_job_id", jobID).
+		Str("endpoint", "/api/jobs/:job_id/retry").
+		Str("method", c.Request.Method).
+		Str("remote_addr", c.ClientIP()).
+		Logger()
+
+	defer func() {
+		duration := time.Since(startTime)
+		reqLogger.Debug().Dur("duration", duration).Msg("Job retry request completed")
+	}()
+
+	reqLogger.Info().Msg("Job retry request received")
 
 	s.JobMutex.RLock()
 	origJob, exists := s.Jobs[jobID]
 	s.JobMutex.RUnlock()
 
 	if !exists {
+		reqLogger.Warn().Msg("Original job not found for retry")
 		c.JSON(404, gin.H{"error": "Job not found"})
 		return
 	}
 
+	reqLogger.Info().
+		Str("original_status", origJob.Status).
+		Int("original_retry_count", origJob.RetryCount).
+		Msg("Creating retry job")
+
 	newJob := s.createRetryJob(origJob)
 	s.queueJob(newJob)
+
+	reqLogger.Info().
+		Str("new_job_id", newJob.ID).
+		Int("new_retry_count", newJob.RetryCount).
+		Msg("Retry job created and queued")
 
 	c.JSON(202, gin.H{"status": "queued", "job_id": newJob.ID, "retry_of": jobID})
 }
 
 func (s *Server) createRetryJob(origJob *Job) *Job {
+	newJobID := fmt.Sprintf("job-%d", time.Now().UnixNano())
+	s.Logger.Debug().
+		Str("original_job_id", origJob.ID).
+		Str("new_job_id", newJobID).
+		Int("retry_count", origJob.RetryCount+1).
+		Msg("Creating retry job")
+
 	newJob := *origJob
-	newJob.ID = fmt.Sprintf("job-%d", time.Now().UnixNano())
+	newJob.ID = newJobID
 	newJob.Status = "queued"
 	newJob.StartTime = time.Now()
 	newJob.EndTime = time.Time{}

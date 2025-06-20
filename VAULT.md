@@ -14,6 +14,7 @@
   - [Retrieving Secrets](#retrieving-secrets)
   - [Environment Variables](#environment-variables)
   - [Role-Based Access Control (RBAC)](#role-based-access-control-rbac)
+  - [AppRole Authentication Setup](#approle-authentication-setup)
   - [Backup and Restore](#backup-and-restore)
   - [Monitoring and Logging](#monitoring-and-logging)
   - [Troubleshooting](#troubleshooting)
@@ -24,6 +25,7 @@
       - [**Checklist to Resolve:**](#checklist-to-resolve)
       - [Vault Fails to Initialize with 'read-only file system' Error](#vault-fails-to-initialize-with-read-only-file-system-error)
       - [403 Error or 'permission denied' When Accessing kv/\* Paths](#403-error-or-permission-denied-when-accessing-kv-paths)
+  - [Structured Logging Configuration](#structured-logging-configuration)
   - [Additional Resources](#additional-resources)
 
 ## Installation
@@ -309,7 +311,7 @@ vault kv put kv/ansible/json-config \
   ```bash
   vault kv get kv/ansible/api
   ```
-
+error="VAULT_ROLE_ID and VAULT_SECRET_ID must be set" component=server-builder
 3 Get SSH key:
 
   ```bash
@@ -393,6 +395,103 @@ vault auth enable userpass
   ```bash
   vault login -method=userpass username=ansible-user
   ```
+
+## AppRole Authentication Setup
+
+The Ansible API uses AppRole authentication to securely access Vault secrets. This method is more suitable for applications than userpass authentication.
+
+### 1. Enable the AppRole Auth Method
+
+```bash
+vault auth enable approle
+```
+
+### 2. Create a Policy for the Application
+
+Create a file named `ansible-policy.hcl` with the following content:
+
+```hcl
+path "secret/data/ansible/*" {
+  capabilities = ["read", "list"]
+}
+```
+
+Upload the policy to Vault:
+
+```bash
+vault policy write ansible-policy ansible-policy.hcl
+```
+
+### 3. Create an AppRole and Attach the Policy
+
+```bash
+vault write auth/approle/role/ansible-role token_policies="ansible-policy"
+```
+
+### 4. Get the Role ID
+
+```bash
+vault read -field=role_id auth/approle/role/ansible-role/role-id
+```
+
+Copy the output and set it as your `VAULT_ROLE_ID`.
+
+### 5. Generate a Secret ID
+
+```bash
+vault write -f -field=secret_id auth/approle/role/ansible-role/secret-id
+```
+
+Copy the output and set it as your `VAULT_SECRET_ID`.
+
+### 6. Set the Environment Variables
+
+**For Bash:**
+```bash
+export VAULT_ROLE_ID="your-role-id-here"
+export VAULT_SECRET_ID="your-secret-id-here"
+```
+
+**For PowerShell:**
+```powershell
+$env:VAULT_ROLE_ID="your-role-id-here"
+$env:VAULT_SECRET_ID="your-secret-id-here"
+```
+
+**For persistent storage, add to your shell profile:**
+```bash
+echo 'export VAULT_ROLE_ID="your-role-id-here"' >> ~/.bashrc
+echo 'export VAULT_SECRET_ID="your-secret-id-here"' >> ~/.bashrc
+source ~/.bashrc
+```
+
+### 7. Verify AppRole Authentication
+
+Test that your application can authenticate and access secrets:
+
+```bash
+# The application should now be able to start without the warning:
+# "Failed to initialize Vault client, falling back to environment variables"
+```
+
+### Summary Table
+
+| Step | Command/Action | Description |
+|------|---------------|-------------|
+| 1    | `vault auth enable approle` | Enable AppRole auth method |
+| 2    | `vault policy write ansible-policy ansible-policy.hcl` | Create and upload policy |
+| 3    | `vault write auth/approle/role/ansible-role token_policies="ansible-policy"` | Create AppRole |
+| 4    | `vault read -field=role_id auth/approle/role/ansible-role/role-id` | Get Role ID |
+| 5    | `vault write -f -field=secret_id auth/approle/role/ansible-role/secret-id` | Get Secret ID |
+| 6    | Set env vars | Set `VAULT_ROLE_ID` and `VAULT_SECRET_ID` |
+| 7    | Run app | App authenticates to Vault |
+
+### Security Notes
+
+- **Rotate Secret IDs regularly** by generating new ones and updating your environment variables
+- **Keep Role IDs and Secret IDs secure** - never commit them to source control
+- **Use different AppRoles** for different applications or environments
+- **Monitor AppRole usage** through Vault audit logs
 
 ## Backup and Restore
 
@@ -689,14 +788,124 @@ and running `vault secrets list` does **not** show a `kv/` path, it means the KV
 
 This will allow you to store and retrieve secrets at the `kv/` path as expected.
 
-## Additional Resources
+## Structured Logging Configuration
 
-- [Official Vault Documentation](https://www.vaultproject.io/docs)
-- [Vault GitHub Repository](https://github.com/hashicorp/vault)
-- [Vault Security Best Practices](https://learn.hashicorp.com/tutorials/vault/security-best-practices)
-- [Vault Architecture](https://www.vaultproject.io/docs/internals/architecture)
-- [Vault API Documentation](https://www.vaultproject.io/api-docs)
-- [Vault CLI Commands](https://www.vaultproject.io/docs/commands)
+The Ansible API uses structured logging with zerolog for better debugging and observability.
+
+### Log Levels
+
+Set the log level using the `LOG_LEVEL` environment variable:
+
+```bash
+export LOG_LEVEL=debug    # Most verbose
+export LOG_LEVEL=info     # Default level
+export LOG_LEVEL=warn     # Warnings and errors only
+export LOG_LEVEL=error    # Errors only
+```
+
+### Log Format
+
+Logs are output in JSON format for easy parsing:
+
+```json
+{
+  "level": "info",
+  "time": "2025-06-20T13:49:43-04:00",
+  "component": "server",
+  "job_id": "job-1234567890",
+  "repository": "owner/repo",
+  "playbook": "site.yml",
+  "duration": "2.5s",
+  "message": "Job processing completed"
+}
+```
+
+### Key Log Fields
+
+| Field | Description | Example |
+|-------|-------------|---------|
+| `component` | Component generating the log | `server`, `vault`, `processor` |
+| `job_id` | Unique job identifier | `job-1234567890` |
+| `request_id` | Unique request identifier | `req-1234567890` |
+| `endpoint` | API endpoint being called | `/api/playbook/run` |
+| `method` | HTTP method | `POST`, `GET` |
+| `remote_addr` | Client IP address | `192.168.1.100` |
+| `duration` | Operation duration | `2.5s` |
+| `path` | Vault secret path | `ansible/github` |
+| `repository` | Git repository URL | `owner/repo` |
+| `playbook` | Ansible playbook path | `site.yml` |
+| `target_hosts` | Target hosts for playbook | `web_servers` |
+
+### Debugging Common Issues
+
+#### Vault Authentication Issues
+```bash
+# Look for these log entries:
+{"level":"error","component":"vault","error":"VAULT_ROLE_ID and VAULT_SECRET_ID must be set"}
+{"level":"error","component":"vault","error":"Failed to authenticate with Vault"}
+```
+
+#### Job Processing Issues
+```bash
+# Look for these log entries:
+{"level":"error","component":"processor","job_id":"job-123","error":"Failed to clone repository"}
+{"level":"error","component":"processor","job_id":"job-123","error":"Ansible playbook execution failed"}
+```
+
+#### API Request Issues
+```bash
+# Look for these log entries:
+{"level":"error","component":"server","request_id":"req-123","error":"Invalid request body"}
+{"level":"warn","component":"server","request_id":"req-123","message":"Rate limit exceeded"}
+```
+
+### Log Filtering Examples
+
+#### Filter by Job ID
+```bash
+# Show all logs for a specific job
+grep "job-1234567890" app.log
+```
+
+#### Filter by Component
+```bash
+# Show only Vault-related logs
+grep '"component":"vault"' app.log
+```
+
+#### Filter by Error Level
+```bash
+# Show only error logs
+grep '"level":"error"' app.log
+```
+
+#### Filter by Duration (slow requests)
+```bash
+# Show requests taking longer than 5 seconds
+grep '"duration":"[5-9]\|1[0-9]"' app.log
+```
+
+### Log Aggregation
+
+For production environments, consider:
+
+1. **Log Shipping**: Send logs to a centralized logging system (ELK Stack, Splunk, etc.)
+2. **Log Rotation**: Use logrotate to manage log file sizes
+3. **Metrics Extraction**: Parse logs to extract metrics for monitoring
+4. **Alerting**: Set up alerts based on error patterns
+
+Example logrotate configuration:
+```
+/var/log/ansible-api/*.log {
+    daily
+    rotate 30
+    compress
+    delaycompress
+    missingok
+    notifempty
+    create 644 ansible-api ansible-api
+}
+```
 
 ## Configuration Precedence
 
@@ -707,3 +916,12 @@ The application loads configuration in the following order:
 3. **Built-in defaults**
 
 If a key is missing in Vault, the environment variable is used. If both are missing, the default is used.
+
+## Additional Resources
+
+- [Official Vault Documentation](https://www.vaultproject.io/docs)
+- [Vault GitHub Repository](https://github.com/hashicorp/vault)
+- [Vault Security Best Practices](https://learn.hashicorp.com/tutorials/vault/security-best-practices)
+- [Vault Architecture](https://www.vaultproject.io/docs/internals/architecture)
+- [Vault API Documentation](https://www.vaultproject.io/api-docs)
+- [Vault CLI Commands](https://www.vaultproject.io/docs/commands)
