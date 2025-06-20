@@ -24,8 +24,14 @@ func NewClient(vaultClient *vault.VaultClient) (*Client, error) {
 	}
 	// Set permissions immediately
 	if err := tmpFile.Chmod(0600); err != nil {
-		tmpFile.Close()
-		os.Remove(tmpFile.Name())
+		err := tmpFile.Close()
+		if err != nil {
+			return nil, err
+		}
+		err = os.Remove(tmpFile.Name())
+		if err != nil {
+			return nil, err
+		}
 		return nil, fmt.Errorf("failed to set permissions on temporary file: %v", err)
 	}
 
