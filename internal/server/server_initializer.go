@@ -289,6 +289,8 @@ func (s *Server) handlePlaybookRun(c *gin.Context) {
 		StartTime:     time.Now(),
 		RepositoryURL: req.RepositoryURL,
 		PlaybookPath:  req.PlaybookPath,
+		TargetHosts:   req.TargetHosts,
+		Inventory:     req.Inventory,
 	}
 	s.JobMutex.Lock()
 	s.Jobs[job.ID] = job

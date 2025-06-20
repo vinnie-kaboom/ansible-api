@@ -10,7 +10,6 @@ import (
 	"golang.org/x/time/rate"
 )
 
-// Config holds the server configuration
 type Config struct {
 	AppID          int    `json:"app_id"`
 	InstallationID int    `json:"installation_id"`
@@ -23,7 +22,6 @@ type Config struct {
 	RateLimit      int    `json:"rate_limit"`
 }
 
-// Server represents the main API server and its dependencies.
 type Server struct {
 	Router               *gin.Engine
 	Logger               zerolog.Logger
@@ -44,20 +42,37 @@ type Server struct {
 type PlaybookRequest struct {
 	RepositoryURL string                       `json:"repository_url" validate:"required,httpsgit"`
 	PlaybookPath  string                       `json:"playbook_path" validate:"required"`
-	Inventory     map[string]map[string]string `json:"inventory" validate:"required,min=1"`
+	Inventory     map[string]map[string]string `json:"inventory"`
 	Environment   map[string]string            `json:"environment"`
 	Secrets       map[string]string            `json:"secrets"`
+	TargetHosts   string                       `json:"target_hosts"`
 }
 
 // Job represents a playbook execution job.
 type Job struct {
-	ID            string    `json:"id"`
-	Status        string    `json:"status"`
-	StartTime     time.Time `json:"start_time"`
-	EndTime       time.Time `json:"end_time"`
-	Output        string    `json:"output"`
-	Error         string    `json:"error"`
-	RepositoryURL string    `json:"repository_url"`
-	PlaybookPath  string    `json:"playbook_path"`
-	RetryCount    int       `json:"retry_count"`
+	ID            string                       `json:"id"`
+	Status        string                       `json:"status"`
+	StartTime     time.Time                    `json:"start_time"`
+	EndTime       time.Time                    `json:"end_time"`
+	Output        string                       `json:"output"`
+	Error         string                       `json:"error"`
+	RepositoryURL string                       `json:"repository_url"`
+	PlaybookPath  string                       `json:"playbook_path"`
+	RetryCount    int                          `json:"retry_count"`
+	TargetHosts   string                       `json:"target_hosts"`
+	Inventory     map[string]map[string]string `json:"inventory"`
+}
+
+type PlaybookState struct {
+	Repo                  string   `json:"repo"`
+	LastRun               string   `json:"last_run"`
+	LastHash              string   `json:"last_hash"`
+	LastStatus            string   `json:"last_status"`
+	LastCheckOutput       string   `json:"last_check_output"`
+	LastRemediation       string   `json:"last_remediation"`
+	LastRemediationStatus string   `json:"last_remediation_status"`
+	DriftDetected         bool     `json:"drift_detected"`
+	LastTargets           []string `json:"last_targets"`
+	PlaybookCommit        string   `json:"playbook_commit"`
+	TargetHosts           string   `json:"target_hosts"`
 }

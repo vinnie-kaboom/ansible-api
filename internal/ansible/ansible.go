@@ -22,6 +22,12 @@ func NewClient(vaultClient *vault.VaultClient) (*Client, error) {
 	if err != nil {
 		return nil, fmt.Errorf("failed to create temporary file: %v", err)
 	}
+	// Set permissions immediately
+	if err := tmpFile.Chmod(0600); err != nil {
+		tmpFile.Close()
+		os.Remove(tmpFile.Name())
+		return nil, fmt.Errorf("failed to set permissions on temporary file: %v", err)
+	}
 
 	// Write an SSH key to a temporary file
 	if _, err := tmpFile.WriteString(sshKey); err != nil {
@@ -45,16 +51,6 @@ func NewClient(vaultClient *vault.VaultClient) (*Client, error) {
 			return nil, fmt.Errorf("failed to close and remove temporary file: %v (remove error: %v)", err, removeErr)
 		}
 		return nil, fmt.Errorf("failed to close temporary file: %v", err)
-	}
-
-	// Set correct permissions
-	if err := os.Chmod(tmpFile.Name(), 0600); err != nil {
-		err := os.Remove(tmpFile.Name())
-		if err != nil {
-			log.Error().Err(err).Msg("failed to remove temporary file after chmod error")
-			return nil, err
-		}
-		return nil, fmt.Errorf("failed to set permissions on temporary file: %v", err)
 	}
 
 	return &Client{
