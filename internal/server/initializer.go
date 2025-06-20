@@ -27,7 +27,7 @@ func httpsGitURLValidator(fl validator.FieldLevel) bool {
 	return httpsGitRegex.MatchString(gitURL)
 }
 
-func (c *Config) setIntValue(key string, value interface{}) {
+func (c *Config) SetIntValue(key string, value interface{}) {
 	if str, ok := value.(string); ok {
 		if intVal, err := strconv.Atoi(str); err == nil {
 			switch key {
@@ -46,7 +46,7 @@ func (c *Config) setIntValue(key string, value interface{}) {
 	}
 }
 
-func (c *Config) setStringValue(key string, value interface{}) {
+func (c *Config) SetStringValue(key string, value interface{}) {
 	if str, ok := value.(string); ok {
 		switch key {
 		case "private_key":
@@ -71,8 +71,8 @@ func loadConfigFromVault(vaultClient *vault.VaultClient) (*Config, error) {
 	// Load GitHub configuration
 	if githubConfig, err := vaultClient.GetSecret("ansible/github"); err == nil {
 		for key, value := range githubConfig {
-			config.setIntValue(key, value)
-			config.setStringValue(key, value)
+			config.SetIntValue(key, value)
+			config.SetStringValue(key, value)
 		}
 	} else {
 		log.Info().Err(err).Msg("GitHub configuration not found in Vault, will use environment variables")
@@ -81,8 +81,8 @@ func loadConfigFromVault(vaultClient *vault.VaultClient) (*Config, error) {
 	// Load API configuration
 	if apiConfig, err := vaultClient.GetSecret("ansible/api"); err == nil {
 		for key, value := range apiConfig {
-			config.setIntValue(key, value)
-			config.setStringValue(key, value)
+			config.SetIntValue(key, value)
+			config.SetStringValue(key, value)
 		}
 	} else {
 		log.Info().Err(err).Msg("API configuration not found in Vault, will use environment variables")
