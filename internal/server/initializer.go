@@ -5,13 +5,10 @@ import (
 	"os"
 	"regexp"
 	"strconv"
-
-	// "sync"
+	"sync"
 	"time"
 
 	"ansible-api/internal/vault"
-
-	"sync"
 
 	"github.com/gin-gonic/gin"
 	"github.com/go-playground/validator/v10"
@@ -20,13 +17,7 @@ import (
 	"golang.org/x/time/rate"
 )
 
-var httpsGitRegex = regexp.MustCompile(`^https://[\w.@:/\-~]+\.git$`)
-
-func httpsGitURLValidator(fl validator.FieldLevel) bool {
-	gitURL := fl.Field().String()
-	return httpsGitRegex.MatchString(gitURL)
-}
-
+// Config methods
 func (c *Config) SetIntValue(key string, value interface{}) {
 	if str, ok := value.(string); ok {
 		if intVal, err := strconv.Atoi(str); err == nil {
@@ -61,38 +52,84 @@ func (c *Config) SetStringValue(key string, value interface{}) {
 	}
 }
 
-func loadConfigFromVault(vaultClient *vault.VaultClient) (*Config, error) {
+
+// NewConfigManager creates a new configuration manager
+func NewConfigManager() *ConfigManager {
+	return &ConfigManager{
+		logger: log.With().Str("component", "config").Logger(),
+	}
+}
+
+// LoadConfiguration loads configuration from multiple sources
+func (cm *ConfigManager) LoadConfiguration(vaultClient *vault.VaultClient) (*Config, error) {
 	config := &Config{}
 
-	if vaultClient == nil {
-		return config, nil
+	// Load from Vault first
+	if err := cm.loadFromVault(vaultClient, config); err != nil {
+		cm.logger.Warn().Err(err).Msg("Failed to load configuration from Vault")
 	}
 
-	// Load GitHub configuration
-	if githubConfig, err := vaultClient.GetSecret("ansible/github"); err == nil {
-		for key, value := range githubConfig {
-			config.SetIntValue(key, value)
-			config.SetStringValue(key, value)
-		}
-	} else {
-		log.Info().Err(err).Msg("GitHub configuration not found in Vault, will use environment variables")
-	}
+	// Load from environment variables
+	cm.loadFromEnvironment(config)
 
-	// Load API configuration
-	if apiConfig, err := vaultClient.GetSecret("ansible/api"); err == nil {
-		for key, value := range apiConfig {
-			config.SetIntValue(key, value)
-			config.SetStringValue(key, value)
-		}
-	} else {
-		log.Info().Err(err).Msg("API configuration not found in Vault, will use environment variables")
-	}
+	// Set defaults for missing values
+	cm.setDefaults(config)
 
 	return config, nil
 }
 
-func loadConfigFromEnv(config *Config) {
-	envMap := map[string]string{
+// loadFromVault loads configuration from Vault
+func (cm *ConfigManager) loadFromVault(vaultClient *vault.VaultClient, config *Config) error {
+	if vaultClient == nil {
+		return fmt.Errorf("vault client is nil")
+	}
+
+	// Load GitHub configuration
+	if err := cm.loadGitHubConfig(vaultClient, config); err != nil {
+		cm.logger.Info().Err(err).Msg("GitHub configuration not found in Vault")
+	}
+
+	// Load API configuration
+	if err := cm.loadAPIConfig(vaultClient, config); err != nil {
+		cm.logger.Info().Err(err).Msg("API configuration not found in Vault")
+	}
+
+	return nil
+}
+
+// loadGitHubConfig loads GitHub-specific configuration from Vault
+func (cm *ConfigManager) loadGitHubConfig(vaultClient *vault.VaultClient, config *Config) error {
+	githubConfig, err := vaultClient.GetSecret("ansible/github")
+	if err != nil {
+		return err
+	}
+
+	for key, value := range githubConfig {
+		config.SetIntValue(key, value)
+		config.SetStringValue(key, value)
+	}
+
+	return nil
+}
+
+// loadAPIConfig loads API-specific configuration from Vault
+func (cm *ConfigManager) loadAPIConfig(vaultClient *vault.VaultClient, config *Config) error {
+	apiConfig, err := vaultClient.GetSecret("ansible/api")
+	if err != nil {
+		return err
+	}
+
+	for key, value := range apiConfig {
+		config.SetIntValue(key, value)
+		config.SetStringValue(key, value)
+	}
+
+	return nil
+}
+
+// loadFromEnvironment loads configuration from environment variables
+func (cm *ConfigManager) loadFromEnvironment(config *Config) {
+	envVars := map[string]string{
 		"GITHUB_APP_ID":                  "",
 		"GITHUB_INSTALLATION_ID":         "",
 		"GITHUB_PRIVATE_KEY":             "",
@@ -105,41 +142,90 @@ func loadConfigFromEnv(config *Config) {
 	}
 
 	// Load all environment variables
-	for key := range envMap {
-		envMap[key] = os.Getenv(key)
+	for key := range envVars {
+		envVars[key] = os.Getenv(key)
 	}
 
 	// Set values if they're not already set from Vault
-	if config.AppID == 0 && envMap["GITHUB_APP_ID"] != "" {
-		config.AppID, _ = strconv.Atoi(envMap["GITHUB_APP_ID"])
+	cm.setIntFromEnv(config, "AppID", envVars["GITHUB_APP_ID"])
+	cm.setIntFromEnv(config, "InstallationID", envVars["GITHUB_INSTALLATION_ID"])
+	cm.setStringFromEnv(config, "PrivateKey", envVars["GITHUB_PRIVATE_KEY"])
+	cm.setStringFromEnv(config, "APIBaseURL", envVars["GITHUB_API_BASE_URL"])
+	cm.setStringFromEnv(config, "ServerPort", envVars["PORT"])
+	cm.setIntFromEnv(config, "WorkerCount", envVars["WORKER_COUNT"])
+	cm.setIntFromEnv(config, "RetentionHours", envVars["RETENTION_HOURS"])
+	cm.setStringFromEnv(config, "TempPatterns", envVars["TEMP_PATTERNS"])
+	cm.setIntFromEnv(config, "RateLimit", envVars["RATE_LIMIT_REQUESTS_PER_SECOND"])
+}
+
+// setIntFromEnv sets an integer field from environment variable if not already set
+func (cm *ConfigManager) setIntFromEnv(config *Config, field, value string) {
+	if value == "" {
+		return
 	}
-	if config.InstallationID == 0 && envMap["GITHUB_INSTALLATION_ID"] != "" {
-		config.InstallationID, _ = strconv.Atoi(envMap["GITHUB_INSTALLATION_ID"])
-	}
-	if config.PrivateKey == "" {
-		config.PrivateKey = envMap["GITHUB_PRIVATE_KEY"]
-	}
-	if config.APIBaseURL == "" {
-		config.APIBaseURL = envMap["GITHUB_API_BASE_URL"]
-	}
-	if config.ServerPort == "" {
-		config.ServerPort = envMap["PORT"]
-	}
-	if config.WorkerCount == 0 && envMap["WORKER_COUNT"] != "" {
-		config.WorkerCount, _ = strconv.Atoi(envMap["WORKER_COUNT"])
-	}
-	if config.RetentionHours == 0 && envMap["RETENTION_HOURS"] != "" {
-		config.RetentionHours, _ = strconv.Atoi(envMap["RETENTION_HOURS"])
-	}
-	if config.TempPatterns == "" {
-		config.TempPatterns = envMap["TEMP_PATTERNS"]
-	}
-	if config.RateLimit == 0 && envMap["RATE_LIMIT_REQUESTS_PER_SECOND"] != "" {
-		config.RateLimit, _ = strconv.Atoi(envMap["RATE_LIMIT_REQUESTS_PER_SECOND"])
+
+	switch field {
+	case "AppID":
+		if config.AppID == 0 {
+			if intVal, err := strconv.Atoi(value); err == nil {
+				config.AppID = intVal
+			}
+		}
+	case "InstallationID":
+		if config.InstallationID == 0 {
+			if intVal, err := strconv.Atoi(value); err == nil {
+				config.InstallationID = intVal
+			}
+		}
+	case "WorkerCount":
+		if config.WorkerCount == 0 {
+			if intVal, err := strconv.Atoi(value); err == nil {
+				config.WorkerCount = intVal
+			}
+		}
+	case "RetentionHours":
+		if config.RetentionHours == 0 {
+			if intVal, err := strconv.Atoi(value); err == nil {
+				config.RetentionHours = intVal
+			}
+		}
+	case "RateLimit":
+		if config.RateLimit == 0 {
+			if intVal, err := strconv.Atoi(value); err == nil {
+				config.RateLimit = intVal
+			}
+		}
 	}
 }
 
-func setDefaultConfig(config *Config) {
+// setStringFromEnv sets a string field from environment variable if not already set
+func (cm *ConfigManager) setStringFromEnv(config *Config, field, value string) {
+	if value == "" {
+		return
+	}
+
+	switch field {
+	case "PrivateKey":
+		if config.PrivateKey == "" {
+			config.PrivateKey = value
+		}
+	case "APIBaseURL":
+		if config.APIBaseURL == "" {
+			config.APIBaseURL = value
+		}
+	case "ServerPort":
+		if config.ServerPort == "" {
+			config.ServerPort = value
+		}
+	case "TempPatterns":
+		if config.TempPatterns == "" {
+			config.TempPatterns = value
+		}
+	}
+}
+
+// setDefaults sets default values for configuration fields
+func (cm *ConfigManager) setDefaults(config *Config) {
 	defaults := map[string]interface{}{
 		"port":            "8080",
 		"worker_count":    4,
@@ -152,76 +238,121 @@ func setDefaultConfig(config *Config) {
 	for key, value := range defaults {
 		switch v := value.(type) {
 		case int:
-			switch key {
-			case "worker_count":
-				if config.WorkerCount == 0 {
-					config.WorkerCount = v
-				}
-			case "retention_hours":
-				if config.RetentionHours == 0 {
-					config.RetentionHours = v
-				}
-			case "rate_limit":
-				if config.RateLimit == 0 {
-					config.RateLimit = v
-				}
-			}
+			cm.setIntDefault(config, key, v)
 		case string:
-			switch key {
-			case "port":
-				if config.ServerPort == "" {
-					config.ServerPort = v
-				}
-			case "temp_patterns":
-				if config.TempPatterns == "" {
-					config.TempPatterns = v
-				}
-			case "api_base_url":
-				if config.APIBaseURL == "" {
-					config.APIBaseURL = v
-				}
-			}
+			cm.setStringDefault(config, key, v)
 		}
 	}
 }
 
-// Server struct is defined in 00_server-structs.go
+// setIntDefault sets an integer default value if not already set
+func (cm *ConfigManager) setIntDefault(config *Config, key string, value int) {
+	switch key {
+	case "worker_count":
+		if config.WorkerCount == 0 {
+			config.WorkerCount = value
+		}
+	case "retention_hours":
+		if config.RetentionHours == 0 {
+			config.RetentionHours = value
+		}
+	case "rate_limit":
+		if config.RateLimit == 0 {
+			config.RateLimit = value
+		}
+	}
+}
 
-func New() (*Server, error) {
+// setStringDefault sets a string default value if not already set
+func (cm *ConfigManager) setStringDefault(config *Config, key string, value string) {
+	switch key {
+	case "port":
+		if config.ServerPort == "" {
+			config.ServerPort = value
+		}
+	case "temp_patterns":
+		if config.TempPatterns == "" {
+			config.TempPatterns = value
+		}
+	case "api_base_url":
+		if config.APIBaseURL == "" {
+			config.APIBaseURL = value
+		}
+	}
+}
+
+
+// NewServerBuilder creates a new server builder
+func NewServerBuilder() *ServerBuilder {
+	return &ServerBuilder{
+		logger: log.With().Str("component", "server-builder").Logger(),
+	}
+}
+
+// Build creates and configures a new server instance
+func (sb *ServerBuilder) Build() (*Server, error) {
 	// Set up logging
+	if err := sb.setupLogging(); err != nil {
+		return nil, fmt.Errorf("failed to setup logging: %w", err)
+	}
+
+	// Initialize Vault client
+	vaultClient, err := sb.initializeVault()
+	if err != nil {
+		sb.logger.Warn().Err(err).Msg("Failed to initialize Vault client, falling back to environment variables")
+	}
+
+	// Load configuration
+	configManager := NewConfigManager()
+	config, err := configManager.LoadConfiguration(vaultClient)
+	if err != nil {
+		return nil, fmt.Errorf("failed to load configuration: %w", err)
+	}
+
+	// Build server
+	server, err := sb.buildServer(config, vaultClient)
+	if err != nil {
+		return nil, fmt.Errorf("failed to build server: %w", err)
+	}
+
+	return server, nil
+}
+
+// setupLogging configures the logging system
+func (sb *ServerBuilder) setupLogging() error {
 	zerolog.TimeFieldFormat = time.RFC3339
+
 	logLevel := os.Getenv("LOG_LEVEL")
 	if logLevel == "" {
 		logLevel = "info"
 	}
+
 	level, err := zerolog.ParseLevel(logLevel)
 	if err != nil {
 		level = zerolog.InfoLevel
 	}
+
 	zerolog.SetGlobalLevel(level)
-	log.Logger = log.Output(zerolog.ConsoleWriter{Out: os.Stdout, TimeFormat: time.RFC3339})
+	log.Logger = log.Output(zerolog.ConsoleWriter{
+		Out:        os.Stdout,
+		TimeFormat: time.RFC3339,
+	})
 
-	// Initialize Vault client
-	vaultClient, err := vault.NewClient()
-	if err != nil {
-		log.Warn().Err(err).Msg("Failed to initialize Vault client, falling back to environment variables")
-	}
+	return nil
+}
 
-	// Load configuration
-	config, err := loadConfigFromVault(vaultClient)
-	if err != nil {
-		return nil, fmt.Errorf("failed to load configuration from Vault: %w", err)
-	}
+// initializeVault creates and initializes the Vault client
+func (sb *ServerBuilder) initializeVault() (*vault.VaultClient, error) {
+	return vault.NewClient()
+}
 
-	loadConfigFromEnv(config)
-	setDefaultConfig(config)
+// buildServer constructs the server with all components
+func (sb *ServerBuilder) buildServer(config *Config, vaultClient *vault.VaultClient) (*Server, error) {
+	// Initialize Gin router
+	router := sb.initializeRouter()
 
-	// Initialize Gin
-	gin.SetMode(gin.ReleaseMode)
-	router := gin.New()
-	router.SetTrustedProxies([]string{"127.0.0.1", "::1"})
-
-	s := &Server{
+	// Create server instance
+	server := &Server{
 		Router:               router,
 		Logger:               log.With().Str("component", "server").Logger(),
 		Jobs:                 make(map[string]*Job),
@@ -236,14 +367,53 @@ func New() (*Server, error) {
 		Config:               config,
 	}
 
-	s.JobProcessor = NewJobProcessor(s)
-	s.registerRoutes()
+	// Initialize components
+	server.JobProcessor = NewJobProcessor(server)
+	server.registerRoutes()
 
-	go s.JobProcessor.ProcessJobs()
+	// Start background processes
+	go server.JobProcessor.ProcessJobs()
 
-	return s, nil
+	return server, nil
 }
 
+// initializeRouter creates and configures the Gin router
+func (sb *ServerBuilder) initializeRouter() *gin.Engine {
+	gin.SetMode(gin.ReleaseMode)
+	router := gin.New()
+	router.SetTrustedProxies([]string{"127.0.0.1", "::1"})
+	return router
+}
+
+
+// NewRequestValidator creates a new request validator
+func NewRequestValidator() *RequestValidator {
+	v := validator.New()
+
+	// Register custom validators
+	httpsGitRegex := regexp.MustCompile(`^https://[\w.@:/\-~]+\.git$`)
+	v.RegisterValidation("httpsgit", func(fl validator.FieldLevel) bool {
+		gitURL := fl.Field().String()
+		return httpsGitRegex.MatchString(gitURL)
+	})
+
+	return &RequestValidator{
+		validator: v,
+	}
+}
+
+// ValidatePlaybookRequest validates a playbook execution request
+func (rv *RequestValidator) ValidatePlaybookRequest(req *PlaybookRequest) error {
+	return rv.validator.Struct(req)
+}
+
+// Legacy function for backward compatibility
+func New() (*Server, error) {
+	builder := NewServerBuilder()
+	return builder.Build()
+}
+
+// Server methods
 func (s *Server) registerRoutes() {
 	r := s.Router
 	r.Use(gin.Logger())
@@ -265,25 +435,31 @@ func (s *Server) handlePlaybookRun(c *gin.Context) {
 		c.JSON(429, gin.H{"error": "Too many requests"})
 		return
 	}
+
 	var req PlaybookRequest
 	if err := c.ShouldBindJSON(&req); err != nil {
 		s.Logger.Error().Err(err).Msg("Invalid request body")
 		c.JSON(400, gin.H{"error": "Invalid request body"})
 		return
 	}
-	validate := validator.New()
-	err := validate.RegisterValidation("httpsgit", httpsGitURLValidator)
-	if err != nil {
-		s.Logger.Error().Err(err).Msg("Failed to register httpsgit validator")
-		c.JSON(500, gin.H{"error": "Internal server error"})
-		return
-	}
-	if err := validate.Struct(req); err != nil {
+
+	// Validate request
+	validator := NewRequestValidator()
+	if err := validator.ValidatePlaybookRequest(&req); err != nil {
 		s.Logger.Error().Err(err).Msg("Validation failed")
 		c.JSON(400, gin.H{"error": err.Error()})
 		return
 	}
-	job := &Job{
+
+	// Create and queue job
+	job := s.createJob(&req)
+	s.queueJob(job)
+
+	c.JSON(202, gin.H{"status": "queued", "job_id": job.ID})
+}
+
+func (s *Server) createJob(req *PlaybookRequest) *Job {
+	return &Job{
 		ID:            fmt.Sprintf("job-%d", time.Now().UnixNano()),
 		Status:        "queued",
 		StartTime:     time.Now(),
@@ -292,13 +468,14 @@ func (s *Server) handlePlaybookRun(c *gin.Context) {
 		TargetHosts:   req.TargetHosts,
 		Inventory:     req.Inventory,
 	}
+}
+
+func (s *Server) queueJob(job *Job) {
 	s.JobMutex.Lock()
 	s.Jobs[job.ID] = job
 	s.JobMutex.Unlock()
 
 	s.JobQueue <- job
-
-	c.JSON(202, gin.H{"status": "queued", "job_id": job.ID})
 }
 
 func (s *Server) handleJobs(c *gin.Context) {
@@ -309,25 +486,38 @@ func (s *Server) handleJobs(c *gin.Context) {
 
 func (s *Server) handleJobStatus(c *gin.Context) {
 	jobID := c.Param("job_id")
+
 	s.JobMutex.RLock()
 	job, exists := s.Jobs[jobID]
 	s.JobMutex.RUnlock()
+
 	if !exists {
 		c.JSON(404, gin.H{"error": "Job not found"})
 		return
 	}
+
 	c.JSON(200, job)
 }
 
 func (s *Server) handleJobRetry(c *gin.Context) {
 	jobID := c.Param("job_id")
+
 	s.JobMutex.RLock()
 	origJob, exists := s.Jobs[jobID]
 	s.JobMutex.RUnlock()
+
 	if !exists {
 		c.JSON(404, gin.H{"error": "Job not found"})
 		return
 	}
+
+	newJob := s.createRetryJob(origJob)
+	s.queueJob(newJob)
+
+	c.JSON(202, gin.H{"status": "queued", "job_id": newJob.ID, "retry_of": jobID})
+}
+
+func (s *Server) createRetryJob(origJob *Job) *Job {
 	newJob := *origJob
 	newJob.ID = fmt.Sprintf("job-%d", time.Now().UnixNano())
 	newJob.Status = "queued"
@@ -337,13 +527,7 @@ func (s *Server) handleJobRetry(c *gin.Context) {
 	newJob.Error = ""
 	newJob.RetryCount = origJob.RetryCount + 1
 
-	s.JobMutex.Lock()
-	s.Jobs[newJob.ID] = &newJob
-	s.JobMutex.Unlock()
-
-	s.JobQueue <- &newJob
-
-	c.JSON(202, gin.H{"status": "queued", "job_id": newJob.ID, "retry_of": jobID})
+	return &newJob
 }
 
 func (s *Server) Start() error {
@@ -352,7 +536,6 @@ func (s *Server) Start() error {
 }
 
 func (s *Server) Stop() error {
-	// Stop the Vault client
 	if s.VaultClient != nil {
 		s.VaultClient = nil
 	}

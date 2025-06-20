@@ -14,10 +14,6 @@ import (
 	"gopkg.in/src-d/go-git.v4"
 )
 
-type JobProcessor struct {
-	server *Server
-}
-
 func NewJobProcessor(server *Server) *JobProcessor {
 	return &JobProcessor{
 		server: server,

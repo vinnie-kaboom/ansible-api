@@ -6,6 +6,7 @@ import (
 	"time"
 
 	"github.com/gin-gonic/gin"
+	"github.com/go-playground/validator/v10"
 	"github.com/rs/zerolog"
 	"golang.org/x/time/rate"
 )
@@ -85,4 +86,24 @@ type DriftDetector struct {
 	server    *Server
 	stateFile string
 	logger    zerolog.Logger
+}
+
+// ConfigManager handles configuration loading and management
+type ConfigManager struct {
+	logger zerolog.Logger
+}
+
+// ServerBuilder handles server construction and initialization
+type ServerBuilder struct {
+	logger zerolog.Logger
+}
+
+// RequestValidator handles request validation
+type RequestValidator struct {
+	validator *validator.Validate
+}
+
+// JobProcessor handles job processing and execution
+type JobProcessor struct {
+	server *Server
 }
