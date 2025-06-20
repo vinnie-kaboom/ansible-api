@@ -76,3 +76,13 @@ type PlaybookState struct {
 	PlaybookCommit        string   `json:"playbook_commit"`
 	TargetHosts           string   `json:"target_hosts"`
 }
+
+// StateFile represents the state of all playbooks
+type StateFile map[string]PlaybookState
+
+// DriftDetector handles drift detection operations
+type DriftDetector struct {
+	server    *Server
+	stateFile string
+	logger    zerolog.Logger
+}
