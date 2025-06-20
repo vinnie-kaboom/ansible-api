@@ -3,6 +3,7 @@ package vault
 import (
 	"fmt"
 	"os"
+	"time"
 
 	vault "github.com/hashicorp/vault/api"
 	"github.com/rs/zerolog"
@@ -24,25 +25,40 @@ type VaultClient struct {
 
 func NewClient() (*VaultClient, error) {
 	logger.Info().Msg("Initializing Vault client")
-	config := vault.DefaultConfig()
-	config.Address = os.Getenv("VAULT_ADDR")
-	if config.Address == "" {
-		config.Address = "http://127.0.0.1:8200"
+
+	vaultAddr := os.Getenv("VAULT_ADDR")
+	if vaultAddr == "" {
+		vaultAddr = "http://127.0.0.1:8200"
+		logger.Debug().Str("vault_addr", vaultAddr).Msg("Using default Vault address")
+	} else {
+		logger.Debug().Str("vault_addr", vaultAddr).Msg("Using configured Vault address")
 	}
+
+	config := vault.DefaultConfig()
+	config.Address = vaultAddr
 
 	client, err := vault.NewClient(config)
 	if err != nil {
-		logger.Error().Msg("Failed to create Vault client")
+		logger.Error().Err(err).Str("vault_addr", vaultAddr).Msg("Failed to create Vault client")
 		return nil, fmt.Errorf("failed to create vault client: %w", err)
 	}
 
 	// Get the role ID and secret ID from environment variables
 	roleID := os.Getenv("VAULT_ROLE_ID")
 	secretID := os.Getenv("VAULT_SECRET_ID")
+
 	if roleID == "" || secretID == "" {
-		logger.Error().Msg("Required Vault credentials not set")
+		logger.Error().
+			Bool("role_id_set", roleID != "").
+			Bool("secret_id_set", secretID != "").
+			Msg("Required Vault credentials not set")
 		return nil, fmt.Errorf("VAULT_ROLE_ID and VAULT_SECRET_ID must be set")
 	}
+
+	logger.Debug().
+		Str("role_id", maskString(roleID)).
+		Str("secret_id", maskString(secretID)).
+		Msg("Vault credentials found, attempting authentication")
 
 	// Login with the provided role_id and secret_id
 	loginSecret, err := client.Logical().Write("auth/approle/login", map[string]interface{}{
@@ -50,40 +66,68 @@ func NewClient() (*VaultClient, error) {
 		"secret_id": secretID,
 	})
 	if err != nil {
-		logger.Error().Msg("Failed to authenticate with Vault")
+		logger.Error().
+			Err(err).
+			Str("role_id", maskString(roleID)).
+			Str("vault_addr", vaultAddr).
+			Msg("Failed to authenticate with Vault")
 		return nil, fmt.Errorf("failed to login to vault: %w", err)
 	}
 
 	client.SetToken(loginSecret.Auth.ClientToken)
-	logger.Info().Msg("Vault client initialized successfully")
+	logger.Info().
+		Str("vault_addr", vaultAddr).
+		Time("token_expiry", time.Unix(int64(loginSecret.Auth.LeaseDuration), 0)).
+		Msg("Vault client initialized successfully")
 	return &VaultClient{client: client}, nil
 }
 
 func (c *VaultClient) GetSecret(path string) (map[string]interface{}, error) {
-	fullPath := fmt.Sprintf("kv/data/%s", path)
+	fullPath := fmt.Sprintf("secret/data/%s", path)
+
+	logger.Debug().
+		Str("path", path).
+		Str("full_path", fullPath).
+		Msg("Retrieving secret from Vault")
+
 	secret, err := c.client.Logical().Read(fullPath)
 	if err != nil {
-		logger.Error().Msg("Failed to read secret")
+		logger.Error().
+			Err(err).
+			Str("path", path).
+			Str("full_path", fullPath).
+			Msg("Failed to read secret from Vault")
 		return nil, fmt.Errorf("failed to read secret: %w", err)
 	}
 
 	if secret == nil || secret.Data == nil {
-		logger.Warn().Msg("Secret not found")
+		logger.Warn().
+			Str("path", path).
+			Str("full_path", fullPath).
+			Msg("Secret not found in Vault")
 		return nil, fmt.Errorf("secret not found: %s", path)
 	}
 
 	// For KV v2, the data is nested under the "data" key
 	data, ok := secret.Data["data"].(map[string]interface{})
 	if !ok {
-		logger.Error().Msg("Invalid secret format")
+		logger.Error().
+			Str("path", path).
+			Str("full_path", fullPath).
+			Msg("Invalid secret data format")
 		return nil, fmt.Errorf("invalid secret data format")
 	}
+
+	logger.Debug().
+		Str("path", path).
+		Int("data_keys", len(data)).
+		Msg("Secret retrieved successfully")
 
 	return data, nil
 }
 
 func (c *VaultClient) PutSecret(path string, data map[string]interface{}) error {
-	_, err := c.client.Logical().Write(fmt.Sprintf("kv/data/%s", path), map[string]interface{}{
+	_, err := c.client.Logical().Write(fmt.Sprintf("secret/data/%s", path), map[string]interface{}{
 		"data": data,
 	})
 	if err != nil {
@@ -95,7 +139,7 @@ func (c *VaultClient) PutSecret(path string, data map[string]interface{}) error 
 }
 
 func (c *VaultClient) DeleteSecret(path string) error {
-	_, err := c.client.Logical().Delete(fmt.Sprintf("kv/data/%s", path))
+	_, err := c.client.Logical().Delete(fmt.Sprintf("secret/data/%s", path))
 	if err != nil {
 		logger.Error().Msg("Failed to delete secret")
 		return fmt.Errorf("failed to delete secret: %w", err)
@@ -105,7 +149,7 @@ func (c *VaultClient) DeleteSecret(path string) error {
 }
 
 func (c *VaultClient) ListSecrets(path string) ([]string, error) {
-	secret, err := c.client.Logical().List(fmt.Sprintf("kv/metadata/%s", path))
+	secret, err := c.client.Logical().List(fmt.Sprintf("secret/metadata/%s", path))
 	if err != nil {
 		logger.Error().Msg("Failed to list secrets")
 		return nil, fmt.Errorf("failed to list secrets: %w", err)
@@ -131,7 +175,7 @@ func (c *VaultClient) ListSecrets(path string) ([]string, error) {
 
 // GetSSHKey retrieves the SSH private key from Vault
 func (c *VaultClient) GetSSHKey() (string, error) {
-	secret, err := c.client.Logical().Read("kv/data/ansible/ssh-key")
+	secret, err := c.client.Logical().Read("secret/data/ansible/ssh-key")
 	if err != nil {
 		logger.Error().Msg("Failed to read SSH key")
 		return "", fmt.Errorf("failed to read SSH key from Vault: %w", err)
@@ -155,4 +199,12 @@ func (c *VaultClient) GetSSHKey() (string, error) {
 	}
 
 	return privateKey, nil
+}
+
+// maskString returns a masked version of a string for logging
+func maskString(s string) string {
+	if len(s) <= 8 {
+		return "****"
+	}
+	return s[:4] + "****" + s[len(s)-4:]
 }

@@ -6,6 +6,7 @@ import (
 	"time"
 
 	"github.com/gin-gonic/gin"
+	"github.com/go-playground/validator/v10"
 	"github.com/rs/zerolog"
 	"golang.org/x/time/rate"
 )
@@ -75,4 +76,34 @@ type PlaybookState struct {
 	LastTargets           []string `json:"last_targets"`
 	PlaybookCommit        string   `json:"playbook_commit"`
 	TargetHosts           string   `json:"target_hosts"`
+}
+
+// StateFile represents the state of all playbooks
+type StateFile map[string]PlaybookState
+
+// DriftDetector handles drift detection operations
+type DriftDetector struct {
+	server    *Server
+	stateFile string
+	logger    zerolog.Logger
+}
+
+// ConfigManager handles configuration loading and management
+type ConfigManager struct {
+	logger zerolog.Logger
+}
+
+// ServerBuilder handles server construction and initialization
+type ServerBuilder struct {
+	logger zerolog.Logger
+}
+
+// RequestValidator handles request validation
+type RequestValidator struct {
+	validator *validator.Validate
+}
+
+// JobProcessor handles job processing and execution
+type JobProcessor struct {
+	server *Server
 }
