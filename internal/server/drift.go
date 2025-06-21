@@ -202,6 +202,38 @@ func (d *DriftDetector) runAnsibleCheck(playbookPath, inventoryPath, targetHosts
 		cmd.Args = append(cmd.Args, "--limit", targetHosts)
 	}
 
+	// Load SSH key from Vault for authentication
+	sshKeyPath := ""
+	if sshKey, err := d.server.VaultClient.GetSecret("ansible/ssh"); err == nil {
+		if privateKey, exists := sshKey["private_key"]; exists {
+			if privateKeyStr, ok := privateKey.(string); ok {
+				// Create temporary SSH key file
+				tmpKeyFile, err := os.CreateTemp("", "ansible-ssh-key-*")
+				if err == nil {
+					defer os.Remove(tmpKeyFile.Name())
+
+					if err := tmpKeyFile.Chmod(0600); err == nil {
+						if _, err := tmpKeyFile.WriteString(privateKeyStr); err == nil {
+							tmpKeyFile.Close()
+							sshKeyPath = tmpKeyFile.Name()
+						}
+					}
+				}
+			}
+		}
+	}
+
+	// Set environment variables to eliminate warnings and sudo password prompts
+	cmd.Env = append(os.Environ(),
+		"ANSIBLE_PYTHON_INTERPRETER=/usr/bin/python3.13",
+		"ANSIBLE_HOST_KEY_CHECKING=False",
+	)
+
+	// Add SSH key to Ansible command if available
+	if sshKeyPath != "" {
+		cmd.Args = append(cmd.Args, "--private-key", sshKeyPath)
+	}
+
 	outputBytes, err := cmd.CombinedOutput()
 	output := string(outputBytes)
 
@@ -247,6 +279,38 @@ func (d *DriftDetector) remediateDrift(playbookPath, inventoryPath, targetHosts 
 	cmd := exec.Command("ansible-playbook", playbookPath, "--inventory", inventoryPath)
 	if targetHosts != "" {
 		cmd.Args = append(cmd.Args, "--limit", targetHosts)
+	}
+
+	// Load SSH key from Vault for authentication
+	sshKeyPath := ""
+	if sshKey, err := d.server.VaultClient.GetSecret("ansible/ssh"); err == nil {
+		if privateKey, exists := sshKey["private_key"]; exists {
+			if privateKeyStr, ok := privateKey.(string); ok {
+				// Create temporary SSH key file
+				tmpKeyFile, err := os.CreateTemp("", "ansible-ssh-key-*")
+				if err == nil {
+					defer os.Remove(tmpKeyFile.Name())
+
+					if err := tmpKeyFile.Chmod(0600); err == nil {
+						if _, err := tmpKeyFile.WriteString(privateKeyStr); err == nil {
+							tmpKeyFile.Close()
+							sshKeyPath = tmpKeyFile.Name()
+						}
+					}
+				}
+			}
+		}
+	}
+
+	// Set environment variables to eliminate warnings and sudo password prompts
+	cmd.Env = append(os.Environ(),
+		"ANSIBLE_PYTHON_INTERPRETER=/usr/bin/python3.13",
+		"ANSIBLE_HOST_KEY_CHECKING=False",
+	)
+
+	// Add SSH key to Ansible command if available
+	if sshKeyPath != "" {
+		cmd.Args = append(cmd.Args, "--private-key", sshKeyPath)
 	}
 
 	_, err := cmd.CombinedOutput()

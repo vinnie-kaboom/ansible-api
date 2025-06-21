@@ -1,0 +1,45 @@
+---
+- name: Uninstall nginx
+  hosts: webservers
+  become: yes
+  gather_facts: yes
+  
+  tasks:
+    - name: Stop nginx service
+      service:
+        name: nginx
+        state: stopped
+        enabled: no
+      ignore_errors: yes
+
+    - name: Remove nginx package
+      package:
+        name: nginx
+        state: absent
+      when: ansible_os_family == "RedHat"
+
+    - name: Remove nginx configuration files
+      file:
+        path: "{{ item }}"
+        state: absent
+      loop:
+        - /etc/nginx/conf.d/custom.conf
+        - /var/www/html/index.html
+        - /var/www/html
+      ignore_errors: yes
+
+    - name: Remove nginx configuration directory
+      file:
+        path: /etc/nginx/conf.d
+        state: absent
+      ignore_errors: yes
+
+    - name: Remove nginx logs
+      file:
+        path: /var/log/nginx
+        state: absent
+      ignore_errors: yes
+
+    - name: Display uninstall status
+      debug:
+        msg: "Nginx has been completely removed" 

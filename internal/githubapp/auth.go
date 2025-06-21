@@ -1,13 +1,18 @@
 package githubapp
 
 import (
+	"crypto/rand"
+	"crypto/rsa"
+	"crypto/x509"
 	"encoding/json"
+	"encoding/pem"
 	"fmt"
 	"io"
 	"net/http"
 	"time"
 
 	"github.com/golang-jwt/jwt/v5"
+	"golang.org/x/crypto/ssh"
 )
 
 const (
@@ -82,4 +87,40 @@ func (a *DefaultAuthenticator) GetInstallationToken(config AuthConfig) (string, 
 // BuildCloneURL creates a clone URL with authentication token
 func BuildCloneURL(token, repoPath, host string) string {
 	return fmt.Sprintf("https://x-access-token:%s@%s/%s", token, host, repoPath)
+}
+
+// GenerateSSHKey generates an SSH key pair for Ansible authentication
+func (a *DefaultAuthenticator) GenerateSSHKey() (string, string, error) {
+	// Generate SSH key pair
+	privateKey, publicKey, err := generateSSHKeyPair()
+	if err != nil {
+		return "", "", fmt.Errorf("failed to generate SSH key pair: %w", err)
+	}
+
+	return privateKey, publicKey, nil
+}
+
+// generateSSHKeyPair creates a new SSH key pair
+func generateSSHKeyPair() (string, string, error) {
+	// Generate private key
+	privateKey, err := rsa.GenerateKey(rand.Reader, 4096)
+	if err != nil {
+		return "", "", err
+	}
+
+	// Encode private key
+	privateKeyPEM := &pem.Block{
+		Type:  "RSA PRIVATE KEY",
+		Bytes: x509.MarshalPKCS1PrivateKey(privateKey),
+	}
+	privateKeyBytes := pem.EncodeToMemory(privateKeyPEM)
+
+	// Generate public key
+	publicKey, err := ssh.NewPublicKey(&privateKey.PublicKey)
+	if err != nil {
+		return "", "", err
+	}
+	publicKeyBytes := ssh.MarshalAuthorizedKey(publicKey)
+
+	return string(privateKeyBytes), string(publicKeyBytes), nil
 }

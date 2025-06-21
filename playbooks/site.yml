@@ -1,0 +1,120 @@
+---
+- name: Install and configure nginx
+  hosts: webservers
+  gather_facts: yes
+  
+  tasks:
+    - name: Update package cache
+      package:
+        update_cache: yes
+      when: ansible_os_family == "RedHat"
+
+    - name: Install nginx
+      package:
+        name: nginx
+        state: present
+      register: nginx_install
+
+    - name: Start and enable nginx service
+      service:
+        name: nginx
+        state: started
+        enabled: yes
+      register: nginx_service
+
+    - name: Create nginx configuration directory
+      file:
+        path: /etc/nginx/conf.d
+        state: directory
+        mode: '0755'
+        owner: root
+        group: root
+
+    - name: Create custom nginx configuration
+      copy:
+        content: |
+          server {
+              listen 80;
+              server_name _;
+              root /var/www/html;
+              index index.html index.htm;
+
+              # Security headers
+              add_header X-Frame-Options "SAMEORIGIN" always;
+              add_header X-Content-Type-Options "nosniff" always;
+              add_header X-XSS-Protection "1; mode=block" always;
+
+              # Logging
+              access_log /var/log/nginx/access.log;
+              error_log /var/log/nginx/error.log;
+
+              location / {
+                  try_files $uri $uri/ =404;
+              }
+
+              # Health check endpoint
+              location /health {
+                  access_log off;
+                  return 200 "healthy\n";
+                  add_header Content-Type text/plain;
+              }
+
+              # Deny access to hidden files
+              location ~ /\. {
+                  deny all;
+                  access_log off;
+                  log_not_found off;
+              }
+          }
+        dest: /etc/nginx/conf.d/custom.conf
+        mode: '0644'
+        owner: root
+        group: root
+        backup: yes
+      notify: reload nginx
+
+    - name: Create web root directory
+      file:
+        path: /var/www/html
+        state: directory
+        mode: '0755'
+        owner: nginx
+        group: nginx
+
+    - name: Create index.html
+      copy:
+        content: |
+          <!DOCTYPE html>
+          <html>
+          <head>
+              <title>Welcome to nginx!</title>
+              <style>
+                  body { font-family: Arial, sans-serif; margin: 40px; }
+                  .container { max-width: 800px; margin: 0 auto; }
+                  .header { background: #f0f0f0; padding: 20px; border-radius: 5px; }
+                  .content { margin-top: 20px; }
+              </style>
+          </head>
+        dest: /var/www/html/index.html
+        mode: '0644'
+        owner: nginx
+        group: nginx
+      notify: reload nginx
+
+    - name: Configure firewall for nginx
+      firewalld:
+        service: http
+        permanent: yes
+        state: enabled
+        immediate: yes
+      when: ansible_os_family == "RedHat"
+
+    - name: Display nginx status
+      debug:
+        msg: "Nginx installation completed successfully"
+
+  handlers:
+    - name: reload nginx
+      service:
+        name: nginx
+        state: reloaded 
