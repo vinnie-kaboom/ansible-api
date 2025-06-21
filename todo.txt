@@ -34,3 +34,23 @@
 - Build a live terminal UI (TUI) for real-time job monitoring.
 - Integrate AI assistant to suggest playbooks or auto-generate inventory.
 - Generate QR codes for job status pages for quick mobile access.
+
+Database persistence (critical - prevents data loss)
+Health checks & monitoring (critical - know when things break)
+Proper error handling & retries (critical - handle failures gracefully)
+Vault Agent integration (high - security & reliability)
+Metrics & observability (high - understand system behavior)
+Input validation (high - prevent security issues)
+Graceful shutdown (medium - clean restarts)
+Circuit breakers (medium - handle external failures)
+
+Add database persistence - biggest reliability win
+Add health check endpoint - know when things are broken
+Add structured logging - debug issues faster
+Add request timeouts - prevent hanging jobs
+Add basic metrics - understand usage patterns
+
+Would you like me to help implement any of these specific 
+improvements? I'd recommend starting with database persistence 
+and health checks as they'll give you the biggest reliability boost 
+with minimal eff

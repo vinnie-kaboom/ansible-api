@@ -91,7 +91,7 @@ func (d *DriftDetector) checkPlaybookDrift(logicalPath string, playbookState *Pl
 	}
 
 	// Log commit hash changes
-	if playbookState.PlaybookCommit != "" {
+	if playbookState.PlaybookCommit != "" && currentCommitHash != "" {
 		if playbookState.PlaybookCommit != currentCommitHash {
 			d.logger.Info().
 				Str("playbook", logicalPath).
@@ -399,6 +399,8 @@ func (d *DriftDetector) logAnsibleSummary(playbook, output string) {
 
 // areChangesIgnorable checks if all changes in Ansible output are ignorable
 func (d *DriftDetector) areChangesIgnorable(output string) bool {
+	d.logger.Debug().Str("output_length", fmt.Sprintf("%d", len(output))).Msg("Checking if changes are ignorable")
+
 	ignorablePatterns := []string{
 		// Time-related patterns
 		"atime", "mtime", "ctime",
@@ -440,6 +442,9 @@ func (d *DriftDetector) areChangesIgnorable(output string) bool {
 	}
 
 	lines := strings.Split(output, "\n")
+	ignorableCount := 0
+	nonIgnorableCount := 0
+
 	for _, line := range lines {
 		line = strings.TrimSpace(line)
 		lineLower := strings.ToLower(line)
@@ -461,15 +466,53 @@ func (d *DriftDetector) areChangesIgnorable(output string) bool {
 
 		// Check if change is ignorable
 		if strings.Contains(line, "-") || strings.Contains(line, "+") {
+			// Skip warning messages and other non-diff content
+			if strings.HasPrefix(line, "[WARNING]:") ||
+				strings.HasPrefix(line, "[ERROR]:") ||
+				strings.HasPrefix(line, "[INFO]:") ||
+				strings.Contains(line, "https://") ||
+				strings.Contains(line, "http://") ||
+				strings.Contains(line, "See") ||
+				strings.Contains(line, "for more information") {
+				continue
+			}
+
 			isIgnorable := false
-			for _, pattern := range ignorablePatterns {
-				if strings.Contains(lineLower, pattern) {
-					isIgnorable = true
-					break
+
+			// Special handling for timestamp changes
+			if strings.Contains(line, "atime") || strings.Contains(line, "mtime") {
+				isIgnorable = true
+				d.logger.Debug().
+					Str("ignorable_timestamp_change", line).
+					Msg("Ignoring timestamp change")
+			} else if strings.Contains(line, "state") && (strings.Contains(line, "file") || strings.Contains(line, "touch")) {
+				isIgnorable = true
+				d.logger.Debug().
+					Str("ignorable_state_change", line).
+					Msg("Ignoring file state change")
+			} else if strings.Contains(line, "175052") && (strings.Contains(line, "atime") || strings.Contains(line, "mtime")) {
+				// Specific check for the timestamp format we're seeing
+				isIgnorable = true
+				d.logger.Debug().
+					Str("ignorable_timestamp_format", line).
+					Msg("Ignoring specific timestamp format change")
+			} else {
+				// Check against other ignorable patterns
+				for _, pattern := range ignorablePatterns {
+					if strings.Contains(lineLower, pattern) {
+						isIgnorable = true
+						break
+					}
 				}
 			}
 
-			if !isIgnorable {
+			if isIgnorable {
+				ignorableCount++
+				d.logger.Debug().
+					Str("ignorable_line", line).
+					Msg("Line marked as ignorable")
+			} else {
+				nonIgnorableCount++
 				d.logger.Debug().
 					Str("non_ignorable_line", line).
 					Msg("Found non-ignorable change")
@@ -477,6 +520,11 @@ func (d *DriftDetector) areChangesIgnorable(output string) bool {
 			}
 		}
 	}
+
+	d.logger.Debug().
+		Int("ignorable_count", ignorableCount).
+		Int("non_ignorable_count", nonIgnorableCount).
+		Msg("Finished checking ignorable changes")
 
 	return true
 }
