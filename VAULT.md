@@ -15,6 +15,15 @@
   - [Environment Variables](#environment-variables)
   - [Role-Based Access Control (RBAC)](#role-based-access-control-rbac)
   - [AppRole Authentication Setup](#approle-authentication-setup)
+    - [1. Enable the AppRole Auth Method](#1-enable-the-approle-auth-method)
+    - [2. Create a Policy for the Application](#2-create-a-policy-for-the-application)
+    - [3. Create an AppRole and Attach the Policy](#3-create-an-approle-and-attach-the-policy)
+    - [4. Get the Role ID](#4-get-the-role-id)
+    - [5. Generate a Secret ID](#5-generate-a-secret-id)
+    - [6. Set the Environment Variables](#6-set-the-environment-variables)
+    - [7. Verify AppRole Authentication](#7-verify-approle-authentication)
+    - [Summary Table](#summary-table)
+    - [Security Notes](#security-notes)
   - [Backup and Restore](#backup-and-restore)
   - [Monitoring and Logging](#monitoring-and-logging)
   - [Troubleshooting](#troubleshooting)
@@ -26,6 +35,20 @@
       - [Vault Fails to Initialize with 'read-only file system' Error](#vault-fails-to-initialize-with-read-only-file-system-error)
       - [403 Error or 'permission denied' When Accessing kv/\* Paths](#403-error-or-permission-denied-when-accessing-kv-paths)
   - [Structured Logging Configuration](#structured-logging-configuration)
+    - [Log Levels](#log-levels)
+    - [Log Format](#log-format)
+    - [Key Log Fields](#key-log-fields)
+    - [Debugging Common Issues](#debugging-common-issues)
+      - [Vault Authentication Issues](#vault-authentication-issues)
+      - [Job Processing Issues](#job-processing-issues)
+      - [API Request Issues](#api-request-issues)
+    - [Log Filtering Examples](#log-filtering-examples)
+      - [Filter by Job ID](#filter-by-job-id)
+      - [Filter by Component](#filter-by-component)
+      - [Filter by Error Level](#filter-by-error-level)
+      - [Filter by Duration (slow requests)](#filter-by-duration-slow-requests)
+    - [Log Aggregation](#log-aggregation)
+  - [Configuration Precedence](#configuration-precedence)
   - [Additional Resources](#additional-resources)
 
 ## Installation
@@ -271,8 +294,11 @@ vault kv put kv/ansible/api \
   worker_count="4" \
   retention_hours="24" \
   temp_patterns="*_site.yml,*_hosts" \
-  rate_limit="10"
+  rate_limit="10" \
+  python_interpreter="/usr/bin/python3"
 ```
+
+> **Python Interpreter Configuration:** The `python_interpreter` field is optional. If not specified, the system will auto-detect the best available Python 3 interpreter. You can also override this with the `ANSIBLE_PYTHON_INTERPRETER_OVERRIDE` environment variable.
 
 4 Store SSH key:
 
@@ -310,7 +336,8 @@ vault kv put kv/ansible/json-config \
 
   ```bash
   vault kv get kv/ansible/api
-  ```
+
+  ```bash
 error="VAULT_ROLE_ID and VAULT_SECRET_ID must be set" component=server-builder
 3 Get SSH key:
 
@@ -447,18 +474,21 @@ Copy the output and set it as your `VAULT_SECRET_ID`.
 ### 6. Set the Environment Variables
 
 **For Bash:**
+
 ```bash
 export VAULT_ROLE_ID="your-role-id-here"
 export VAULT_SECRET_ID="your-secret-id-here"
 ```
 
 **For PowerShell:**
+
 ```powershell
 $env:VAULT_ROLE_ID="your-role-id-here"
 $env:VAULT_SECRET_ID="your-secret-id-here"
 ```
 
 **For persistent storage, add to your shell profile:**
+
 ```bash
 echo 'export VAULT_ROLE_ID="your-role-id-here"' >> ~/.bashrc
 echo 'export VAULT_SECRET_ID="your-secret-id-here"' >> ~/.bashrc
@@ -839,6 +869,7 @@ Logs are output in JSON format for easy parsing:
 ### Debugging Common Issues
 
 #### Vault Authentication Issues
+
 ```bash
 # Look for these log entries:
 {"level":"error","component":"vault","error":"VAULT_ROLE_ID and VAULT_SECRET_ID must be set"}
@@ -846,6 +877,7 @@ Logs are output in JSON format for easy parsing:
 ```
 
 #### Job Processing Issues
+
 ```bash
 # Look for these log entries:
 {"level":"error","component":"processor","job_id":"job-123","error":"Failed to clone repository"}
@@ -853,6 +885,7 @@ Logs are output in JSON format for easy parsing:
 ```
 
 #### API Request Issues
+
 ```bash
 # Look for these log entries:
 {"level":"error","component":"server","request_id":"req-123","error":"Invalid request body"}
@@ -862,24 +895,28 @@ Logs are output in JSON format for easy parsing:
 ### Log Filtering Examples
 
 #### Filter by Job ID
+
 ```bash
 # Show all logs for a specific job
 grep "job-1234567890" app.log
 ```
 
 #### Filter by Component
+
 ```bash
 # Show only Vault-related logs
 grep '"component":"vault"' app.log
 ```
 
 #### Filter by Error Level
+
 ```bash
 # Show only error logs
 grep '"level":"error"' app.log
 ```
 
 #### Filter by Duration (slow requests)
+
 ```bash
 # Show requests taking longer than 5 seconds
 grep '"duration":"[5-9]\|1[0-9]"' app.log
@@ -895,7 +932,8 @@ For production environments, consider:
 4. **Alerting**: Set up alerts based on error patterns
 
 Example logrotate configuration:
-```
+
+```bash
 /var/log/ansible-api/*.log {
     daily
     rotate 30

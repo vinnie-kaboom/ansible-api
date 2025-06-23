@@ -8,6 +8,7 @@ require (
 	github.com/golang-jwt/jwt/v5 v5.2.2
 	github.com/hashicorp/vault/api v1.20.0
 	github.com/rs/zerolog v1.34.0
+	golang.org/x/crypto v0.36.0
 	golang.org/x/time v0.11.0
 	gopkg.in/src-d/go-git.v4 v4.13.1
 )
@@ -53,7 +54,6 @@ require (
 	github.com/ugorji/go/codec v1.2.12 // indirect
 	github.com/xanzy/ssh-agent v0.2.1 // indirect
 	golang.org/x/arch v0.8.0 // indirect
-	golang.org/x/crypto v0.36.0 // indirect
 	golang.org/x/net v0.37.0 // indirect
 	golang.org/x/sys v0.33.0 // indirect
 	golang.org/x/text v0.23.0 // indirect

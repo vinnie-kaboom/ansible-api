@@ -113,30 +113,30 @@ func (p *JobProcessor) ProcessJobs() {
 
 		// Inventory handling with detailed logging
 		inventoryFilePath := filepath.Join(tmpDir, "inventory", "hosts.ini")
-		fallbackInventoryFilePath := filepath.Join("inventory.ini")
 
 		if job.Inventory == nil {
 			jobLogger.Debug().
-				Str("primary_inventory", inventoryFilePath).
-				Str("fallback_inventory", fallbackInventoryFilePath).
+				Str("inventory_path", inventoryFilePath).
 				Msg("No inventory provided in request, checking repository")
 
 			if _, err := os.Stat(inventoryFilePath); os.IsNotExist(err) {
-				if _, err := os.Stat(fallbackInventoryFilePath); os.IsNotExist(err) {
-					jobLogger.Error().
-						Str("primary_inventory", inventoryFilePath).
-						Str("fallback_inventory", fallbackInventoryFilePath).
-						Msg("No inventory file found in repository and no inventory provided in request")
-					p.updateJobStatus(job, "failed", "", "No inventory file found in repository and no inventory provided in request")
-					continue
-				} else {
-					inventoryFilePath = fallbackInventoryFilePath
-					jobLogger.Info().Str("inventory_path", inventoryFilePath).Msg("Using fallback inventory file")
-				}
+				jobLogger.Error().
+					Str("inventory_path", inventoryFilePath).
+					Msg("No inventory file found in repository and no inventory provided in request")
+				p.updateJobStatus(job, "failed", "", "No inventory file found in repository and no inventory provided in request")
+				continue
 			} else {
 				jobLogger.Info().Str("inventory_path", inventoryFilePath).Msg("Using repository inventory file")
 			}
 		} else {
+			// Create inventory directory if it doesn't exist
+			inventoryDir := filepath.Dir(inventoryFilePath)
+			if err := os.MkdirAll(inventoryDir, 0755); err != nil {
+				jobLogger.Error().Err(err).Str("inventory_dir", inventoryDir).Msg("Failed to create inventory directory")
+				p.updateJobStatus(job, "failed", "", err.Error())
+				continue
+			}
+
 			jobLogger.Info().
 				Int("inventory_groups", len(job.Inventory)).
 				Str("inventory_path", inventoryFilePath).
@@ -195,7 +195,7 @@ func (p *JobProcessor) ProcessJobs() {
 
 		// Set environment variables to eliminate warnings
 		ansibleCmd.Env = append(os.Environ(),
-			"ANSIBLE_PYTHON_INTERPRETER=/usr/bin/python3.13",
+			"ANSIBLE_PYTHON_INTERPRETER="+p.getPythonInterpreter(),
 			"ANSIBLE_HOST_KEY_CHECKING=False",
 		)
 
@@ -497,4 +497,54 @@ func (p *JobProcessor) parsePlayRecap(output string) map[string]PlayRecap {
 	}
 
 	return recap
+}
+
+// getPythonInterpreter gets the Python interpreter, using config override if available, otherwise auto-detecting
+func (p *JobProcessor) getPythonInterpreter() string {
+	// Check if explicitly configured
+	if p.server.Config != nil && p.server.Config.PythonInterpreter != "" {
+		return p.server.Config.PythonInterpreter
+	}
+
+	// Check environment variable override
+	if envInterpreter := os.Getenv("ANSIBLE_PYTHON_INTERPRETER_OVERRIDE"); envInterpreter != "" {
+		return envInterpreter
+	}
+
+	// Auto-detect
+	return detectPythonInterpreter()
+}
+
+// detectPythonInterpreter finds the best available Python interpreter (Linux-focused)
+func detectPythonInterpreter() string {
+	// List of Python interpreters to try, in order of preference
+	pythonCandidates := []string{
+		"python3",          // Most common, should work on most systems
+		"/usr/bin/python3", // Standard location on Linux
+		"python",           // Fallback to python (might be Python 2 or 3)
+		"/usr/bin/python",  // Standard location fallback
+		"python3.9",        // Specific versions if needed
+		"python3.10",
+		"python3.11",
+		"python3.12",
+		"python3.13",
+	}
+
+	for _, candidate := range pythonCandidates {
+		// Use 'which' to check if command exists on Linux, then test version
+		if cmd := exec.Command("which", candidate); cmd.Run() == nil {
+			// Test if it's actually Python 3
+			if testCmd := exec.Command(candidate, "--version"); testCmd.Run() == nil {
+				if output, err := testCmd.Output(); err == nil {
+					version := string(output)
+					if strings.Contains(version, "Python 3") {
+						return candidate
+					}
+				}
+			}
+		}
+	}
+
+	// If nothing else works, fallback to python3
+	return "python3"
 }

@@ -10,4 +10,6 @@ type Config struct {
 	TemplateDir string `json:"template_dir"`
 	// Port specifies the HTTP server port
 	Port int `json:"port"`
+	// PythonInterpreter specifies the Python interpreter path for Ansible (optional, auto-detected if empty)
+	PythonInterpreter string `json:"python_interpreter,omitempty"`
 }

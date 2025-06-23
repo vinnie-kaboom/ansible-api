@@ -225,7 +225,7 @@ func (d *DriftDetector) runAnsibleCheck(playbookPath, inventoryPath, targetHosts
 
 	// Set environment variables to eliminate warnings and sudo password prompts
 	cmd.Env = append(os.Environ(),
-		"ANSIBLE_PYTHON_INTERPRETER=/usr/bin/python3.13",
+		"ANSIBLE_PYTHON_INTERPRETER="+d.getPythonInterpreter(),
 		"ANSIBLE_HOST_KEY_CHECKING=False",
 	)
 
@@ -304,7 +304,7 @@ func (d *DriftDetector) remediateDrift(playbookPath, inventoryPath, targetHosts 
 
 	// Set environment variables to eliminate warnings and sudo password prompts
 	cmd.Env = append(os.Environ(),
-		"ANSIBLE_PYTHON_INTERPRETER=/usr/bin/python3.13",
+		"ANSIBLE_PYTHON_INTERPRETER="+d.getPythonInterpreter(),
 		"ANSIBLE_HOST_KEY_CHECKING=False",
 	)
 
@@ -725,4 +725,20 @@ func (d *DriftDetector) parseAnsibleChanges(output string) []AnsibleChange {
 	}
 
 	return changes
+}
+
+// getPythonInterpreter gets the Python interpreter, using config override if available, otherwise auto-detecting
+func (d *DriftDetector) getPythonInterpreter() string {
+	// Check if explicitly configured
+	if d.server.Config != nil && d.server.Config.PythonInterpreter != "" {
+		return d.server.Config.PythonInterpreter
+	}
+
+	// Check environment variable override
+	if envInterpreter := os.Getenv("ANSIBLE_PYTHON_INTERPRETER_OVERRIDE"); envInterpreter != "" {
+		return envInterpreter
+	}
+
+	// Auto-detect
+	return detectPythonInterpreter()
 }

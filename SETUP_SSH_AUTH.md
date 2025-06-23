@@ -120,6 +120,7 @@ tail -f /path/to/your/api/logs
 ## Configuration Files
 
 ### Current Inventory Setup
+
 ```ini
 # inventory/hosts.ini
 [webservers]
@@ -127,6 +128,7 @@ localhost ansible_connection=ssh ansible_user=vincent ansible_ssh_private_key_fi
 ```
 
 ### Current Playbook Setup
+
 ```yaml
 # playbooks/site.yml
 ---
@@ -147,17 +149,21 @@ localhost ansible_connection=ssh ansible_user=vincent ansible_ssh_private_key_fi
 ### SSH Connection Issues
 
 1. **Check SSH key permissions:**
+
    ```bash
+
    chmod 600 ~/.ssh/ansible_key
    chmod 600 ~/.ssh/authorized_keys
    ```
 
 2. **Test SSH manually:**
+
    ```bash
    ssh -i ~/.ssh/ansible_key -v vincent@localhost
    ```
 
-3. **Check SSH service:**
+3. **Check SSH service:*
+
    ```bash
    sudo systemctl status sshd
    ```
@@ -165,11 +171,13 @@ localhost ansible_connection=ssh ansible_user=vincent ansible_ssh_private_key_fi
 ### Vault Issues
 
 1. **Verify Vault secret exists:**
+
    ```bash
    vault kv get kv/ansible/ssh
    ```
 
 2. **Check Vault authentication:**
+
    ```bash
    vault token lookup
    ```
@@ -177,11 +185,13 @@ localhost ansible_connection=ssh ansible_user=vincent ansible_ssh_private_key_fi
 ### Ansible Issues
 
 1. **Test Ansible manually:**
+
    ```bash
    ansible-playbook -i inventory/hosts.ini playbooks/site.yml --private-key ~/.ssh/ansible_key
    ```
 
 2. **Check Ansible version:**
+
    ```bash
    ansible --version
    ```
@@ -208,13 +218,14 @@ localhost ansible_connection=ssh ansible_user=vincent ansible_ssh_private_key_fi
 The following environment variables are automatically set by the API:
 
 ```bash
-ANSIBLE_PYTHON_INTERPRETER=/usr/bin/python3.13
+ANSIBLE_PYTHON_INTERPRETER=/usr/bin/python3
 ANSIBLE_HOST_KEY_CHECKING=False
 ```
 
 ## Next Steps
 
 1. **Commit and push changes to repository:**
+
    ```bash
    git add .
    git commit -m "Add SSH key authentication setup"
@@ -234,10 +245,11 @@ ANSIBLE_HOST_KEY_CHECKING=False
 ## Summary
 
 This setup provides:
+
 - ✅ **SSH key authentication** for both local and remote hosts
 - ✅ **No sudo password prompts**
 - ✅ **Secure credential management** via Vault
 - ✅ **Scalable solution** for production environments
 - ✅ **Proper drift detection** without false positives
 
-The system is now ready for both local development and production deployment! 🚀 
+The system is now ready for both local development and production deployment! 🚀

@@ -12,15 +12,16 @@ import (
 )
 
 type Config struct {
-	AppID          int    `json:"app_id"`
-	InstallationID int    `json:"installation_id"`
-	PrivateKey     string `json:"private_key"`
-	APIBaseURL     string `json:"api_base_url"`
-	ServerPort     string `json:"port"`
-	WorkerCount    int    `json:"worker_count"`
-	RetentionHours int    `json:"retention_hours"`
-	TempPatterns   string `json:"temp_patterns"`
-	RateLimit      int    `json:"rate_limit"`
+	AppID             int    `json:"app_id"`
+	InstallationID    int    `json:"installation_id"`
+	PrivateKey        string `json:"private_key"`
+	APIBaseURL        string `json:"api_base_url"`
+	ServerPort        string `json:"port"`
+	WorkerCount       int    `json:"worker_count"`
+	RetentionHours    int    `json:"retention_hours"`
+	TempPatterns      string `json:"temp_patterns"`
+	RateLimit         int    `json:"rate_limit"`
+	PythonInterpreter string `json:"python_interpreter,omitempty"`
 }
 
 type Server struct {
