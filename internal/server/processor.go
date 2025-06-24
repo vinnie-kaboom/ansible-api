@@ -24,227 +24,298 @@ func NewJobProcessor(server *Server) *JobProcessor {
 // ProcessJobs continuously processes jobs from the queue
 func (p *JobProcessor) ProcessJobs() {
 	for job := range p.server.JobQueue {
-		// Create a logger with job context for this entire job execution
-		jobLogger := p.server.Logger.With().
-			Str("job_id", job.ID).
-			Str("repository", job.RepositoryURL).
-			Str("playbook", job.PlaybookPath).
-			Str("target_hosts", job.TargetHosts).
-			Logger()
+		p.processJob(job)
+	}
+}
 
-		jobLogger.Info().Msg("Starting job processing")
+// processJob processes a single job
+func (p *JobProcessor) processJob(job *Job) {
+	// Create a logger with job context for this entire job execution
+	jobLogger := p.server.Logger.With().
+		Str("job_id", job.ID).
+		Str("repository", job.RepositoryURL).
+		Str("playbook", job.PlaybookPath).
+		Str("target_hosts", job.TargetHosts).
+		Logger()
 
-		p.server.JobMutex.Lock()
-		job.Status = "running"
-		p.server.JobMutex.Unlock()
+	jobLogger.Info().Msg("Starting job processing")
 
-		// Track job duration
-		startTime := time.Now()
-		defer func() {
-			duration := time.Since(startTime)
-			jobLogger.Info().
-				Dur("duration", duration).
-				Str("final_status", job.Status).
-				Msg("Job processing completed")
-		}()
+	p.server.JobMutex.Lock()
+	job.Status = "running"
+	p.server.JobMutex.Unlock()
 
-		tmpDir, err := os.MkdirTemp("", "repo")
-		if err != nil {
-			jobLogger.Error().Err(err).Msg("Failed to create temporary directory")
-			p.updateJobStatus(job, "failed", "", err.Error())
-			continue
+	// Track job duration
+	startTime := time.Now()
+	defer func() {
+		duration := time.Since(startTime)
+		jobLogger.Info().
+			Dur("duration", duration).
+			Str("final_status", job.Status).
+			Msg("Job processing completed")
+	}()
+
+	tmpDir, err := os.MkdirTemp("", "repo")
+	if err != nil {
+		jobLogger.Error().Err(err).Msg("Failed to create temporary directory")
+		p.updateJobStatus(job, "failed", "", err.Error())
+		return
+	}
+	defer func() {
+		if err := os.RemoveAll(tmpDir); err != nil {
+			jobLogger.Error().Err(err).Str("tmp_dir", tmpDir).Msg("Failed to remove temporary directory")
+		} else {
+			jobLogger.Debug().Str("tmp_dir", tmpDir).Msg("Temporary directory cleaned up")
 		}
-		defer func() {
-			if err := os.RemoveAll(tmpDir); err != nil {
-				jobLogger.Error().Err(err).Str("tmp_dir", tmpDir).Msg("Failed to remove temporary directory")
-			} else {
-				jobLogger.Debug().Str("tmp_dir", tmpDir).Msg("Temporary directory cleaned up")
-			}
-		}()
+	}()
 
-		jobLogger.Info().Msg("Authenticating with GitHub App")
+	jobLogger.Info().Msg("Authenticating with GitHub App")
 
-		token, err := (&githubapp.DefaultAuthenticator{}).GetInstallationToken(githubapp.AuthConfig{
-			AppID:          p.server.GithubAppID,
-			InstallationID: p.server.GithubInstallationID,
-			PrivateKey:     p.server.GithubPrivateKey,
-			APIBaseURL:     p.server.GithubAPIBaseURL,
-		})
-		if err != nil {
+	token, err := (&githubapp.DefaultAuthenticator{}).GetInstallationToken(githubapp.AuthConfig{
+		AppID:          p.server.GithubAppID,
+		InstallationID: p.server.GithubInstallationID,
+		PrivateKey:     p.server.GithubPrivateKey,
+		APIBaseURL:     p.server.GithubAPIBaseURL,
+	})
+	if err != nil {
+		jobLogger.Error().
+			Err(err).
+			Int("app_id", p.server.GithubAppID).
+			Int("installation_id", p.server.GithubInstallationID).
+			Str("api_base_url", p.server.GithubAPIBaseURL).
+			Msg("Failed to authenticate with GitHub")
+		p.updateJobStatus(job, "failed", "", "GitHub App authentication failed: "+err.Error())
+		return
+	}
+
+	jobLogger.Info().Msg("GitHub authentication successful")
+
+	repoPath := extractRepoPath(job.RepositoryURL)
+	host := extractHost(job.RepositoryURL)
+	cloneURL := githubapp.BuildCloneURL(token, repoPath, host)
+
+	jobLogger.Info().
+		Str("repository", repoPath).
+		Str("host", host).
+		Str("clone_url", maskTokenInURL(cloneURL)).
+		Str("tmp_dir", tmpDir).
+		Msg("Cloning repository")
+
+	gitOutput := &gitOutputWriter{logger: jobLogger.With().Str("component", "git").Logger()}
+	_, err = git.PlainClone(tmpDir, false, &git.CloneOptions{
+		URL:      cloneURL,
+		Progress: gitOutput,
+	})
+	if err != nil {
+		jobLogger.Error().
+			Err(err).
+			Str("repository", repoPath).
+			Str("clone_url", maskTokenInURL(cloneURL)).
+			Msg("Failed to clone repository")
+		p.updateJobStatus(job, "failed", "", err.Error())
+		return
+	}
+
+	jobLogger.Info().Str("repository", repoPath).Msg("Repository cloned successfully")
+
+	// Inventory handling with detailed logging
+	inventoryFilePath := filepath.Join(tmpDir, "inventory", "hosts.ini")
+
+	if job.Inventory == nil {
+		jobLogger.Debug().
+			Str("inventory_path", inventoryFilePath).
+			Msg("No inventory provided in request, checking repository")
+
+		if _, err := os.Stat(inventoryFilePath); os.IsNotExist(err) {
 			jobLogger.Error().
-				Err(err).
-				Int("app_id", p.server.GithubAppID).
-				Int("installation_id", p.server.GithubInstallationID).
-				Str("api_base_url", p.server.GithubAPIBaseURL).
-				Msg("Failed to authenticate with GitHub")
-			p.updateJobStatus(job, "failed", "", "GitHub App authentication failed: "+err.Error())
-			continue
+				Str("inventory_path", inventoryFilePath).
+				Msg("No inventory file found in repository and no inventory provided in request")
+			p.updateJobStatus(job, "failed", "", "No inventory file found in repository and no inventory provided in request")
+			return
+		} else {
+			jobLogger.Info().Str("inventory_path", inventoryFilePath).Msg("Using repository inventory file")
 		}
-
-		jobLogger.Info().Msg("GitHub authentication successful")
-
-		repoPath := extractRepoPath(job.RepositoryURL)
-		host := extractHost(job.RepositoryURL)
-		cloneURL := githubapp.BuildCloneURL(token, repoPath, host)
+	} else {
+		// Create inventory directory if it doesn't exist
+		inventoryDir := filepath.Dir(inventoryFilePath)
+		if err := os.MkdirAll(inventoryDir, 0755); err != nil {
+			jobLogger.Error().Err(err).Str("inventory_dir", inventoryDir).Msg("Failed to create inventory directory")
+			p.updateJobStatus(job, "failed", "", err.Error())
+			return
+		}
 
 		jobLogger.Info().
-			Str("repository", repoPath).
-			Str("host", host).
-			Str("clone_url", maskTokenInURL(cloneURL)).
-			Str("tmp_dir", tmpDir).
-			Msg("Cloning repository")
+			Int("inventory_groups", len(job.Inventory)).
+			Str("inventory_path", inventoryFilePath).
+			Msg("Creating inventory file from request")
 
-		gitOutput := &gitOutputWriter{logger: jobLogger.With().Str("component", "git").Logger()}
-		_, err = git.PlainClone(tmpDir, false, &git.CloneOptions{
-			URL:      cloneURL,
-			Progress: gitOutput,
-		})
+		inventoryFile, err := os.Create(inventoryFilePath)
 		if err != nil {
-			jobLogger.Error().
-				Err(err).
-				Str("repository", repoPath).
-				Str("clone_url", maskTokenInURL(cloneURL)).
-				Msg("Failed to clone repository")
+			jobLogger.Error().Err(err).Str("inventory_path", inventoryFilePath).Msg("Failed to create inventory file")
 			p.updateJobStatus(job, "failed", "", err.Error())
-			continue
+			return
 		}
+		defer inventoryFile.Close()
 
-		jobLogger.Info().Str("repository", repoPath).Msg("Repository cloned successfully")
-
-		// Inventory handling with detailed logging
-		inventoryFilePath := filepath.Join(tmpDir, "inventory", "hosts.ini")
-
-		if job.Inventory == nil {
+		for group, hosts := range job.Inventory {
 			jobLogger.Debug().
-				Str("inventory_path", inventoryFilePath).
-				Msg("No inventory provided in request, checking repository")
-
-			if _, err := os.Stat(inventoryFilePath); os.IsNotExist(err) {
-				jobLogger.Error().
-					Str("inventory_path", inventoryFilePath).
-					Msg("No inventory file found in repository and no inventory provided in request")
-				p.updateJobStatus(job, "failed", "", "No inventory file found in repository and no inventory provided in request")
-				continue
-			} else {
-				jobLogger.Info().Str("inventory_path", inventoryFilePath).Msg("Using repository inventory file")
+				Str("group", group).
+				Int("hosts", len(hosts)).
+				Msg("Writing inventory group")
+			fmt.Fprintf(inventoryFile, "[%s]\n", group)
+			for host, vars := range hosts {
+				fmt.Fprintf(inventoryFile, "%s %s\n", host, vars)
 			}
-		} else {
-			// Create inventory directory if it doesn't exist
-			inventoryDir := filepath.Dir(inventoryFilePath)
-			if err := os.MkdirAll(inventoryDir, 0755); err != nil {
-				jobLogger.Error().Err(err).Str("inventory_dir", inventoryDir).Msg("Failed to create inventory directory")
-				p.updateJobStatus(job, "failed", "", err.Error())
-				continue
-			}
-
-			jobLogger.Info().
-				Int("inventory_groups", len(job.Inventory)).
-				Str("inventory_path", inventoryFilePath).
-				Msg("Creating inventory file from request")
-
-			inventoryFile, err := os.Create(inventoryFilePath)
-			if err != nil {
-				jobLogger.Error().Err(err).Str("inventory_path", inventoryFilePath).Msg("Failed to create inventory file")
-				p.updateJobStatus(job, "failed", "", err.Error())
-				continue
-			}
-			defer inventoryFile.Close()
-
-			for group, hosts := range job.Inventory {
-				jobLogger.Debug().
-					Str("group", group).
-					Int("hosts", len(hosts)).
-					Msg("Writing inventory group")
-				fmt.Fprintf(inventoryFile, "[%s]\n", group)
-				for host, vars := range hosts {
-					fmt.Fprintf(inventoryFile, "%s %s\n", host, vars)
-				}
-				fmt.Fprintf(inventoryFile, "\n")
-			}
-			jobLogger.Info().Msg("Inventory file created successfully")
+			fmt.Fprintf(inventoryFile, "\n")
 		}
+		jobLogger.Info().Msg("Inventory file created successfully")
+	}
 
-		playbookPath := filepath.Join(tmpDir, job.PlaybookPath)
-		ansibleCmd := exec.Command("ansible-playbook", playbookPath, "-i", inventoryFilePath)
-		if job.TargetHosts != "" {
-			ansibleCmd.Args = append(ansibleCmd.Args, "--limit", job.TargetHosts)
+	playbookPath := filepath.Join(tmpDir, job.PlaybookPath)
+	ansibleCmd := exec.Command("ansible-playbook", playbookPath, "-i", inventoryFilePath)
+
+	// If target hosts is empty, determine appropriate targets from inventory
+	targetHosts := job.TargetHosts
+	if targetHosts == "" {
+		// For localhost-based inventories, explicitly target localhost
+		if inventoryContent, err := os.ReadFile(inventoryFilePath); err == nil {
+			inventoryStr := string(inventoryContent)
+			if strings.Contains(inventoryStr, "localhost") && strings.Contains(inventoryStr, "ansible_connection=local") {
+				targetHosts = "localhost"
+				jobLogger.Info().Str("auto_detected_targets", targetHosts).Msg("Auto-detected target hosts from inventory")
+			}
 		}
-		ansibleCmd.Dir = tmpDir
+	}
 
-		// Load SSH key from Vault for authentication
-		sshKeyPath := ""
-		if sshKey, err := p.server.VaultClient.GetSecret("ansible/ssh"); err == nil {
-			if privateKey, exists := sshKey["private_key"]; exists {
-				if privateKeyStr, ok := privateKey.(string); ok {
-					// Create temporary SSH key file
-					tmpKeyFile, err := os.CreateTemp("", "ansible-ssh-key-*")
-					if err == nil {
-						defer os.Remove(tmpKeyFile.Name())
+	if targetHosts != "" {
+		ansibleCmd.Args = append(ansibleCmd.Args, "--limit", targetHosts)
+	}
+	ansibleCmd.Dir = tmpDir
 
-						if err := tmpKeyFile.Chmod(0600); err == nil {
-							if _, err := tmpKeyFile.WriteString(privateKeyStr); err == nil {
-								tmpKeyFile.Close()
-								sshKeyPath = tmpKeyFile.Name()
-								jobLogger.Debug().Str("ssh_key_path", sshKeyPath).Msg("SSH key loaded from Vault")
-							}
+	// Load SSH key from Vault for authentication
+	sshKeyPath := ""
+	if sshKey, err := p.server.VaultClient.GetSecret("ansible/ssh-key"); err == nil {
+		if privateKey, exists := sshKey["private_key"]; exists {
+			if privateKeyStr, ok := privateKey.(string); ok {
+				// Create temporary SSH key file
+				tmpKeyFile, err := os.CreateTemp("", "ansible-ssh-key-*")
+				if err == nil {
+					defer os.Remove(tmpKeyFile.Name())
+
+					if err := tmpKeyFile.Chmod(0600); err == nil {
+						if _, err := tmpKeyFile.WriteString(privateKeyStr); err == nil {
+							tmpKeyFile.Close()
+							sshKeyPath = tmpKeyFile.Name()
+							jobLogger.Debug().Str("ssh_key_path", sshKeyPath).Msg("SSH key loaded from Vault")
 						}
 					}
 				}
 			}
 		}
+	}
 
-		// Set environment variables to eliminate warnings
-		ansibleCmd.Env = append(os.Environ(),
-			"ANSIBLE_PYTHON_INTERPRETER="+p.getPythonInterpreter(),
-			"ANSIBLE_HOST_KEY_CHECKING=False",
-		)
+	// Set environment variables to eliminate warnings
+	envVars := []string{
+		"ANSIBLE_PYTHON_INTERPRETER=" + p.getPythonInterpreter(),
+		"ANSIBLE_HOST_KEY_CHECKING=False",
+	}
 
-		// Add SSH key to Ansible command if available
-		if sshKeyPath != "" {
-			ansibleCmd.Args = append(ansibleCmd.Args, "--private-key", sshKeyPath)
-		}
-
-		// Capture output
-		var stdout, stderr bytes.Buffer
-		ansibleCmd.Stdout = &stdout
-		ansibleCmd.Stderr = &stderr
-
-		jobLogger.Info().Msg("Executing Ansible playbook")
-		err = ansibleCmd.Run()
-
-		// Capture the raw output
-		rawOutput := stdout.String()
-		rawError := stderr.String()
-
-		// Create structured output
-		structuredOutput := p.createStructuredOutput(rawOutput, rawError, err)
-
-		job.EndTime = time.Now()
-		duration := job.EndTime.Sub(job.StartTime)
-
+	// Add become password from Vault if available, skip for passwordless sudo
+	if sudoPassword := p.getSudoPassword(); sudoPassword != "" {
+		// Try using become password file instead of environment variable
+		tmpPasswordFile, err := os.CreateTemp("", "ansible-become-pass-*")
 		if err != nil {
-			job.Status = "failed"
-			job.Error = err.Error()
-			jobLogger.Error().
-				Err(err).
-				Str("raw_output", rawOutput).
-				Str("raw_error", rawError).
-				Dur("duration", duration).
-				Msg("Ansible playbook execution failed")
+			jobLogger.Error().Err(err).Msg("Failed to create temporary password file")
 		} else {
-			job.Status = "completed"
+			defer os.Remove(tmpPasswordFile.Name())
+			defer tmpPasswordFile.Close()
+
+			if _, err := tmpPasswordFile.WriteString(sudoPassword); err != nil {
+				jobLogger.Error().Err(err).Msg("Failed to write password to temporary file")
+			} else {
+				ansibleCmd.Args = append(ansibleCmd.Args, "--become", "--become-method=sudo")
+				ansibleCmd.Args = append(ansibleCmd.Args, "--become-password-file", tmpPasswordFile.Name())
+				// Add verbose flag to debug privilege escalation
+				ansibleCmd.Args = append(ansibleCmd.Args, "-vvv")
+
+				jobLogger.Info().
+					Str("password_length", fmt.Sprintf("%d", len(sudoPassword))).
+					Str("password_preview", sudoPassword[:4]+"...").
+					Str("password_file", tmpPasswordFile.Name()).
+					Msg("Using sudo password from Vault via password file")
+			}
+		}
+	} else {
+		// Don't set ANSIBLE_BECOME_PASSWORD at all for passwordless sudo
+		// Let inventory ansible_become_flags="-n" handle it
+		jobLogger.Info().Msg("Using passwordless sudo from inventory configuration")
+	}
+
+	// Set environment variables - ensure ANSIBLE_BECOME_PASSWORD is properly set
+	fullEnv := append(os.Environ(), envVars...)
+	ansibleCmd.Env = fullEnv
+
+	// Add SSH key to Ansible command if available
+	if sshKeyPath != "" {
+		ansibleCmd.Args = append(ansibleCmd.Args, "--private-key", sshKeyPath)
+	}
+
+	// Debug logging - show exact command and environment
+	jobLogger.Info().
+		Strs("command_args", ansibleCmd.Args).
+		Strs("env_vars", envVars).
+		Str("working_dir", ansibleCmd.Dir).
+		Msg("Ansible command details")
+
+	// Additional debug: check if ANSIBLE_BECOME_PASSWORD is in environment
+	for _, env := range fullEnv {
+		if strings.HasPrefix(env, "ANSIBLE_BECOME_PASSWORD=") {
 			jobLogger.Info().
-				Dur("duration", duration).
-				Msg("Ansible playbook execution completed successfully")
+				Str("env_var", env[:25]+"...").
+				Msg("ANSIBLE_BECOME_PASSWORD environment variable confirmed")
+			break
 		}
+	}
 
-		job.Output = structuredOutput
+	// Capture output
+	var stdout, stderr bytes.Buffer
+	ansibleCmd.Stdout = &stdout
+	ansibleCmd.Stderr = &stderr
 
-		// Record completed state
-		logicalPlaybookPath := job.PlaybookPath
-		if updateErr := UpdatePlaybookState(p.server, logicalPlaybookPath, playbookPath, job.RepositoryURL, job.Status, job.TargetHosts); updateErr != nil {
-			jobLogger.Error().Err(updateErr).Msg("Failed to update playbook state")
-		}
+	jobLogger.Info().Msg("Executing Ansible playbook")
+	err = ansibleCmd.Run()
+
+	// Capture the raw output
+	rawOutput := stdout.String()
+	rawError := stderr.String()
+
+	// Create structured output
+	structuredOutput := p.createStructuredOutput(rawOutput, rawError, err)
+
+	job.EndTime = time.Now()
+	duration := job.EndTime.Sub(job.StartTime)
+
+	if err != nil {
+		job.Status = "failed"
+		job.Error = err.Error()
+		jobLogger.Error().
+			Err(err).
+			Str("raw_output", rawOutput).
+			Str("raw_error", rawError).
+			Dur("duration", duration).
+			Msg("Ansible playbook execution failed")
+	} else {
+		job.Status = "completed"
+		jobLogger.Info().
+			Dur("duration", duration).
+			Msg("Ansible playbook execution completed successfully")
+	}
+
+	job.Output = structuredOutput
+
+	// Record completed state
+	logicalPlaybookPath := job.PlaybookPath
+	if updateErr := UpdatePlaybookState(p.server, logicalPlaybookPath, playbookPath, job.RepositoryURL, job.Status, targetHosts); updateErr != nil {
+		jobLogger.Error().Err(updateErr).Msg("Failed to update playbook state")
 	}
 }
 
@@ -302,37 +373,6 @@ func (w *gitOutputWriter) Write(p []byte) (n int, err error) {
 		w.logger.Info().Str("progress", output).Msg("Git clone progress")
 	}
 	return len(p), nil
-}
-
-// ansibleOutputWriter is a custom writer to capture and format Ansible output
-type ansibleOutputWriter struct {
-	logger zerolog.Logger
-	buffer strings.Builder
-}
-
-func (w *ansibleOutputWriter) Write(p []byte) (n int, err error) {
-	w.buffer.Write(p)
-
-	lines := strings.Split(string(p), "\n")
-	for _, line := range lines {
-		line = strings.TrimSpace(line)
-		if line != "" {
-			if strings.Contains(line, "ERROR") || strings.Contains(line, "fatal:") {
-				w.logger.Error().Str("output", line).Msg("Ansible execution")
-			} else if strings.Contains(line, "WARNING") {
-				w.logger.Warn().Str("output", line).Msg("Ansible execution")
-			} else if strings.Contains(line, "TASK") || strings.Contains(line, "PLAY") {
-				w.logger.Info().Str("output", line).Msg("Ansible execution")
-			} else {
-				w.logger.Debug().Str("output", line).Msg("Ansible execution")
-			}
-		}
-	}
-	return len(p), nil
-}
-
-func (w *ansibleOutputWriter) GetOutput() string {
-	return w.buffer.String()
 }
 
 func (p *JobProcessor) createStructuredOutput(rawOutput, rawError string, err error) string {
@@ -513,6 +553,18 @@ func (p *JobProcessor) getPythonInterpreter() string {
 
 	// Auto-detect
 	return detectPythonInterpreter()
+}
+
+// getSudoPassword retrieves sudo/become password from Vault if available
+func (p *JobProcessor) getSudoPassword() string {
+	if sudoSecret, err := p.server.VaultClient.GetSecret("ansible/sudo"); err == nil {
+		if password, exists := sudoSecret["password"]; exists {
+			if passwordStr, ok := password.(string); ok {
+				return passwordStr
+			}
+		}
+	}
+	return ""
 }
 
 // detectPythonInterpreter finds the best available Python interpreter (Linux-focused)

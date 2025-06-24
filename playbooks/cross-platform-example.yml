@@ -1,0 +1,64 @@
+---
+# Cross-Platform Ansible Playbook Example
+# Demonstrates privilege escalation for both Linux and Windows
+
+- name: Configure Linux servers
+  hosts: webservers
+  become: yes  # Uses sudo with password from Vault
+  gather_facts: yes
+  
+  tasks:
+    - name: Install nginx (Linux)
+      package:
+        name: nginx
+        state: present
+      when: ansible_os_family != "Windows"
+
+    - name: Start nginx service (Linux)
+      service:
+        name: nginx
+        state: started
+        enabled: yes
+      when: ansible_os_family != "Windows"
+
+- name: Configure Windows servers
+  hosts: windows_servers
+  become: yes  # Uses runas with password from Vault
+  gather_facts: yes
+  
+  tasks:
+    - name: Install IIS (Windows)
+      win_feature:
+        name: IIS-WebServer
+        state: present
+      when: ansible_os_family == "Windows"
+
+    - name: Start IIS service (Windows)
+      win_service:
+        name: W3SVC
+        state: started
+        start_mode: auto
+      when: ansible_os_family == "Windows"
+
+- name: Cross-platform tasks
+  hosts: all
+  become: yes
+  gather_facts: yes
+  
+  tasks:
+    - name: Create application directory (Linux)
+      file:
+        path: /opt/myapp
+        state: directory
+        mode: '0755'
+      when: ansible_os_family != "Windows"
+
+    - name: Create application directory (Windows)
+      win_file:
+        path: C:\myapp
+        state: directory
+      when: ansible_os_family == "Windows"
+
+    - name: Display OS information
+      debug:
+        msg: "Operating System: {{ ansible_os_family }} on {{ inventory_hostname }}" 

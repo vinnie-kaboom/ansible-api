@@ -307,6 +307,20 @@ vault kv put kv/ansible/ssh-key \
   private_key=@/path/to/private_key.pem
 ```
 
+5 Store privilege escalation passwords (cross-platform):
+
+```bash
+# For Linux/Unix systems (sudo password)
+vault kv put kv/ansible/sudo \
+  password="your-sudo-password"
+
+# For Windows systems (runas password) - same secret path, different usage
+vault kv put kv/ansible/sudo \
+  password="your-windows-admin-password"
+```
+
+> **Cross-Platform Support:** The same Vault secret (`ansible/sudo`) is used for both Linux (`sudo`) and Windows (`runas`) privilege escalation. Ansible automatically uses the appropriate method based on the target host's operating system and the `ansible_become_method` setting in your inventory.
+
 5 Store multiple values in a single path:
 
 ```bash

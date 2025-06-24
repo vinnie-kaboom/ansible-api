@@ -1,0 +1,135 @@
+---
+- name: Uninstall and cleanup nginx on RHEL 9
+  hosts: webservers
+  become: yes
+  gather_facts: yes
+  
+  tasks:
+    - name: Stop nginx service
+      service:
+        name: nginx
+        state: stopped
+        enabled: no
+      ignore_errors: yes
+
+    - name: Remove nginx package
+      dnf:
+        name: nginx
+        state: absent
+        autoremove: yes
+      when: ansible_os_family == "RedHat"
+
+    - name: Remove nginx configuration files
+      file:
+        path: "{{ item }}"
+        state: absent
+      loop:
+        - /etc/nginx
+        - /var/log/nginx
+        - /var/cache/nginx
+        - /var/lib/nginx
+        - /run/nginx.pid
+        - /etc/logrotate.d/nginx
+      ignore_errors: yes
+
+    - name: Remove custom nginx configuration
+      file:
+        path: /etc/nginx/conf.d/custom.conf
+        state: absent
+      ignore_errors: yes
+
+    - name: Remove web content directory
+      file:
+        path: /var/www/html
+        state: absent
+        force: yes
+      ignore_errors: yes
+
+    - name: Remove nginx user (if created)
+      user:
+        name: nginx
+        state: absent
+        remove: yes
+        force: yes
+      ignore_errors: yes
+
+    - name: Remove nginx group (if created)
+      group:
+        name: nginx
+        state: absent
+      ignore_errors: yes
+
+    - name: Close firewall ports for HTTP/HTTPS
+      firewalld:
+        service: "{{ item }}"
+        permanent: yes
+        state: disabled
+        immediate: yes
+      loop:
+        - http
+        - https
+      when: ansible_os_family == "RedHat"
+      ignore_errors: yes
+
+    - name: Reload firewall
+      service:
+        name: firewalld
+        state: reloaded
+      when: ansible_os_family == "RedHat"
+      ignore_errors: yes
+
+    - name: Clean DNF cache
+      dnf:
+        autoremove: yes
+        update_cache: yes
+      when: ansible_os_family == "RedHat"
+
+    - name: Find and remove any remaining nginx files
+      find:
+        paths:
+          - /etc
+          - /var/log
+          - /var/cache
+          - /usr/share
+        patterns: "*nginx*"
+        file_type: any
+        recurse: yes
+      register: nginx_files
+      ignore_errors: yes
+
+    - name: Remove remaining nginx files
+      file:
+        path: "{{ item.path }}"
+        state: absent
+        force: yes
+      loop: "{{ nginx_files.files }}"
+      when: nginx_files.files is defined
+      ignore_errors: yes
+
+    - name: Verify nginx is completely removed
+      command: which nginx
+      register: nginx_check
+      failed_when: nginx_check.rc == 0
+      changed_when: false
+      ignore_errors: yes
+
+    - name: Display uninstall status
+      debug:
+        msg: |
+          Nginx uninstall completed!
+          {% if nginx_check.rc != 0 %}
+          ✅ Nginx has been successfully removed from the system
+          {% else %}
+          ❌ Warning: Nginx binary still found at {{ nginx_check.stdout }}
+          {% endif %}
+          
+          Cleaned up:
+          - Nginx package and dependencies
+          - Configuration files (/etc/nginx)
+          - Log files (/var/log/nginx)
+          - Cache files (/var/cache/nginx)
+          - Web content (/var/www/html)
+          - Firewall rules (HTTP/HTTPS)
+          - System user and group
+          
+          System is ready for fresh nginx installation if needed. 

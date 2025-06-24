@@ -204,7 +204,7 @@ func (d *DriftDetector) runAnsibleCheck(playbookPath, inventoryPath, targetHosts
 
 	// Load SSH key from Vault for authentication
 	sshKeyPath := ""
-	if sshKey, err := d.server.VaultClient.GetSecret("ansible/ssh"); err == nil {
+	if sshKey, err := d.server.VaultClient.GetSecret("ansible/ssh-key"); err == nil {
 		if privateKey, exists := sshKey["private_key"]; exists {
 			if privateKeyStr, ok := privateKey.(string); ok {
 				// Create temporary SSH key file
@@ -224,10 +224,22 @@ func (d *DriftDetector) runAnsibleCheck(playbookPath, inventoryPath, targetHosts
 	}
 
 	// Set environment variables to eliminate warnings and sudo password prompts
-	cmd.Env = append(os.Environ(),
-		"ANSIBLE_PYTHON_INTERPRETER="+d.getPythonInterpreter(),
+	envVars := []string{
+		"ANSIBLE_PYTHON_INTERPRETER=" + d.getPythonInterpreter(),
 		"ANSIBLE_HOST_KEY_CHECKING=False",
-	)
+	}
+
+	// Add become password from Vault if available, or empty for passwordless sudo
+	if sudoPassword := d.getSudoPassword(); sudoPassword != "" {
+		envVars = append(envVars, "ANSIBLE_BECOME_PASSWORD="+sudoPassword)
+		d.logger.Debug().Msg("Using sudo password from Vault for privilege escalation")
+	} else {
+		// Set empty password for passwordless sudo
+		envVars = append(envVars, "ANSIBLE_BECOME_PASSWORD=")
+		d.logger.Debug().Msg("Using empty password for passwordless sudo")
+	}
+
+	cmd.Env = append(os.Environ(), envVars...)
 
 	// Add SSH key to Ansible command if available
 	if sshKeyPath != "" {
@@ -239,13 +251,24 @@ func (d *DriftDetector) runAnsibleCheck(playbookPath, inventoryPath, targetHosts
 
 	d.logAnsibleSummary(playbookPath, output)
 
+	// Check for changes first, even if there was an error
+	// Ansible often returns non-zero exit codes when changes would be made
+	hasChanges := strings.Contains(output, "changed=") && !strings.Contains(output, "changed=0")
+
 	if err != nil {
-		d.logger.Error().Str("playbook", playbookPath).Err(err).Msg("Ansible check mode failed")
-		return false, "error", ""
+		d.logger.Warn().Str("playbook", playbookPath).Err(err).Str("output", output).Msg("Ansible check mode returned non-zero exit code")
+
+		// If there are no changes and we have an error, it's likely a real failure
+		if !hasChanges {
+			d.logger.Error().Str("playbook", playbookPath).Err(err).Msg("Ansible check mode failed with no changes detected")
+			return false, "error", ""
+		}
+		// If there are changes, continue with drift detection despite the error
+		d.logger.Info().Str("playbook", playbookPath).Msg("Check mode error likely due to drift - proceeding with drift analysis")
 	}
 
 	// Enhanced logging to show exactly what's changing
-	if strings.Contains(output, "changed=") && !strings.Contains(output, "changed=0") {
+	if hasChanges {
 		d.logger.Info().Str("playbook", playbookPath).Str("full_output", output).Msg("Full Ansible check output for drift analysis")
 
 		// Parse and log specific changes
@@ -283,7 +306,7 @@ func (d *DriftDetector) remediateDrift(playbookPath, inventoryPath, targetHosts 
 
 	// Load SSH key from Vault for authentication
 	sshKeyPath := ""
-	if sshKey, err := d.server.VaultClient.GetSecret("ansible/ssh"); err == nil {
+	if sshKey, err := d.server.VaultClient.GetSecret("ansible/ssh-key"); err == nil {
 		if privateKey, exists := sshKey["private_key"]; exists {
 			if privateKeyStr, ok := privateKey.(string); ok {
 				// Create temporary SSH key file
@@ -303,10 +326,22 @@ func (d *DriftDetector) remediateDrift(playbookPath, inventoryPath, targetHosts 
 	}
 
 	// Set environment variables to eliminate warnings and sudo password prompts
-	cmd.Env = append(os.Environ(),
-		"ANSIBLE_PYTHON_INTERPRETER="+d.getPythonInterpreter(),
+	envVars := []string{
+		"ANSIBLE_PYTHON_INTERPRETER=" + d.getPythonInterpreter(),
 		"ANSIBLE_HOST_KEY_CHECKING=False",
-	)
+	}
+
+	// Add become password from Vault if available, or empty for passwordless sudo
+	if sudoPassword := d.getSudoPassword(); sudoPassword != "" {
+		envVars = append(envVars, "ANSIBLE_BECOME_PASSWORD="+sudoPassword)
+		d.logger.Debug().Msg("Using sudo password from Vault for privilege escalation")
+	} else {
+		// Set empty password for passwordless sudo
+		envVars = append(envVars, "ANSIBLE_BECOME_PASSWORD=")
+		d.logger.Debug().Msg("Using empty password for passwordless sudo")
+	}
+
+	cmd.Env = append(os.Environ(), envVars...)
 
 	// Add SSH key to Ansible command if available
 	if sshKeyPath != "" {
@@ -483,9 +518,8 @@ func (d *DriftDetector) areChangesIgnorable(output string) bool {
 		"service", "systemd", "enabled", "disabled",
 		"started", "stopped", "restarted",
 
-		// Package patterns
-		"package", "yum", "dnf", "apt", "pip",
-		"version", "latest", "installed",
+		// Package metadata patterns (but not actual install/removal)
+		"package cache", "metadata", "repository updated",
 
 		// Network patterns
 		"interface", "ip", "address", "network",
@@ -508,6 +542,21 @@ func (d *DriftDetector) areChangesIgnorable(output string) bool {
 	lines := strings.Split(output, "\n")
 	ignorableCount := 0
 	nonIgnorableCount := 0
+
+	// First check for significant changes that should not be ignored
+	hasPackageChanges := strings.Contains(output, "TASK [Install") ||
+		strings.Contains(output, "TASK [Remove") ||
+		strings.Contains(output, "TASK [Uninstall")
+	hasServiceChanges := strings.Contains(output, "TASK [Start") ||
+		strings.Contains(output, "TASK [Stop") ||
+		strings.Contains(output, "TASK [Enable") ||
+		strings.Contains(output, "TASK [Disable")
+
+	// If we have package or service changes with actual "changed" status, this is real drift
+	if (hasPackageChanges || hasServiceChanges) && strings.Contains(output, "changed: [") {
+		d.logger.Info().Msg("Detected significant package or service changes - not ignorable")
+		return false
+	}
 
 	for _, line := range lines {
 		line = strings.TrimSpace(line)
@@ -741,4 +790,16 @@ func (d *DriftDetector) getPythonInterpreter() string {
 
 	// Auto-detect
 	return detectPythonInterpreter()
+}
+
+// getSudoPassword retrieves sudo/become password from Vault if available
+func (d *DriftDetector) getSudoPassword() string {
+	if sudoSecret, err := d.server.VaultClient.GetSecret("ansible/sudo"); err == nil {
+		if password, exists := sudoSecret["password"]; exists {
+			if passwordStr, ok := password.(string); ok {
+				return passwordStr
+			}
+		}
+	}
+	return ""
 }
