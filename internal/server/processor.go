@@ -219,35 +219,12 @@ func (p *JobProcessor) processJob(job *Job) {
 		"ANSIBLE_HOST_KEY_CHECKING=False",
 	}
 
-	// Add become password from Vault if available, skip for passwordless sudo
-	if sudoPassword := p.getSudoPassword(); sudoPassword != "" {
-		// Try using become password file instead of environment variable
-		tmpPasswordFile, err := os.CreateTemp("", "ansible-become-pass-*")
-		if err != nil {
-			jobLogger.Error().Err(err).Msg("Failed to create temporary password file")
-		} else {
-			defer os.Remove(tmpPasswordFile.Name())
-			defer tmpPasswordFile.Close()
-
-			if _, err := tmpPasswordFile.WriteString(sudoPassword); err != nil {
-				jobLogger.Error().Err(err).Msg("Failed to write password to temporary file")
-			} else {
-				ansibleCmd.Args = append(ansibleCmd.Args, "--become", "--become-method=sudo")
-				ansibleCmd.Args = append(ansibleCmd.Args, "--become-password-file", tmpPasswordFile.Name())
-				// Add verbose flag to debug privilege escalation
-				ansibleCmd.Args = append(ansibleCmd.Args, "-vvv")
-
-				jobLogger.Info().
-					Str("password_length", fmt.Sprintf("%d", len(sudoPassword))).
-					Str("password_preview", sudoPassword[:4]+"...").
-					Str("password_file", tmpPasswordFile.Name()).
-					Msg("Using sudo password from Vault via password file")
-			}
-		}
-	} else {
-		// Don't set ANSIBLE_BECOME_PASSWORD at all for passwordless sudo
-		// Let inventory ansible_become_flags="-n" handle it
-		jobLogger.Info().Msg("Using passwordless sudo from inventory configuration")
+	// Configure authentication based on target OS and connection type
+	err = p.configureAuthentication(ansibleCmd, inventoryFilePath, &envVars, jobLogger)
+	if err != nil {
+		jobLogger.Error().Err(err).Msg("Failed to configure authentication")
+		p.updateJobStatus(job, "failed", "", "Authentication configuration failed: "+err.Error())
+		return
 	}
 
 	// Set environment variables - ensure ANSIBLE_BECOME_PASSWORD is properly set
@@ -559,6 +536,148 @@ func (p *JobProcessor) getPythonInterpreter() string {
 func (p *JobProcessor) getSudoPassword() string {
 	if sudoSecret, err := p.server.VaultClient.GetSecret("ansible/sudo"); err == nil {
 		if password, exists := sudoSecret["password"]; exists {
+			if passwordStr, ok := password.(string); ok {
+				return passwordStr
+			}
+		}
+	}
+	return ""
+}
+
+// configureAuthentication sets up authentication based on target OS and connection type
+func (p *JobProcessor) configureAuthentication(ansibleCmd *exec.Cmd, inventoryFilePath string, envVars *[]string, jobLogger zerolog.Logger) error {
+	// Read inventory to determine connection type and target OS
+	inventoryContent, err := os.ReadFile(inventoryFilePath)
+	if err != nil {
+		return fmt.Errorf("failed to read inventory file: %w", err)
+	}
+
+	inventoryStr := string(inventoryContent)
+	isWindowsTarget := strings.Contains(inventoryStr, "ansible_connection=winrm") ||
+		strings.Contains(inventoryStr, "ansible_os_family=Windows") ||
+		strings.Contains(inventoryStr, "ansible_system=Win32NT")
+
+	if isWindowsTarget {
+		return p.configureWindowsAuthentication(ansibleCmd, inventoryStr, envVars, jobLogger)
+	} else {
+		return p.configureLinuxAuthentication(ansibleCmd, inventoryStr, envVars, jobLogger)
+	}
+}
+
+// configureLinuxAuthentication configures authentication for Linux targets (existing logic)
+func (p *JobProcessor) configureLinuxAuthentication(ansibleCmd *exec.Cmd, inventoryStr string, envVars *[]string, jobLogger zerolog.Logger) error {
+	// Add become password from Vault if available, skip for passwordless sudo
+	if sudoPassword := p.getSudoPassword(); sudoPassword != "" {
+		// Try using become password file instead of environment variable
+		tmpPasswordFile, err := os.CreateTemp("", "ansible-become-pass-*")
+		if err != nil {
+			return fmt.Errorf("failed to create temporary password file: %w", err)
+		}
+		defer os.Remove(tmpPasswordFile.Name())
+		defer tmpPasswordFile.Close()
+
+		if _, err := tmpPasswordFile.WriteString(sudoPassword); err != nil {
+			return fmt.Errorf("failed to write password to temporary file: %w", err)
+		}
+
+		ansibleCmd.Args = append(ansibleCmd.Args, "--become", "--become-method=sudo")
+		ansibleCmd.Args = append(ansibleCmd.Args, "--become-password-file", tmpPasswordFile.Name())
+		// Add verbose flag to debug privilege escalation
+		ansibleCmd.Args = append(ansibleCmd.Args, "-vvv")
+
+		jobLogger.Info().
+			Str("password_length", fmt.Sprintf("%d", len(sudoPassword))).
+			Str("password_preview", sudoPassword[:4]+"...").
+			Str("password_file", tmpPasswordFile.Name()).
+			Msg("Using sudo password from Vault via password file")
+	} else {
+		// Don't set ANSIBLE_BECOME_PASSWORD at all for passwordless sudo
+		// Let inventory ansible_become_flags="-n" handle it
+		jobLogger.Info().Msg("Using passwordless sudo from inventory configuration")
+	}
+	return nil
+}
+
+// configureWindowsAuthentication configures authentication for Windows targets
+func (p *JobProcessor) configureWindowsAuthentication(ansibleCmd *exec.Cmd, inventoryStr string, envVars *[]string, jobLogger zerolog.Logger) error {
+	// Get Windows credentials from Vault
+	winrmUser := p.getWindowsUser()
+	winrmPassword := p.getWindowsPassword()
+
+	if winrmUser != "" && winrmPassword != "" {
+		// Set WinRM authentication environment variables
+		*envVars = append(*envVars, "ANSIBLE_WINRM_TRANSPORT=ntlm")
+		*envVars = append(*envVars, "ANSIBLE_WINRM_USERNAME="+winrmUser)
+		*envVars = append(*envVars, "ANSIBLE_WINRM_PASSWORD="+winrmPassword)
+
+		// For Windows, we typically don't need --become since WinRM runs with appropriate privileges
+		// But if elevation is needed, we can use --become-method=runas
+		if strings.Contains(inventoryStr, "ansible_become=true") || strings.Contains(inventoryStr, "ansible_become_method=runas") {
+			ansibleCmd.Args = append(ansibleCmd.Args, "--become", "--become-method=runas")
+
+			// Create become password file for runas if different from WinRM password
+			becomePassword := p.getWindowsBecomePassword()
+			if becomePassword == "" {
+				becomePassword = winrmPassword // fallback to WinRM password
+			}
+
+			tmpPasswordFile, err := os.CreateTemp("", "ansible-become-pass-*")
+			if err != nil {
+				return fmt.Errorf("failed to create Windows become password file: %w", err)
+			}
+			defer os.Remove(tmpPasswordFile.Name())
+			defer tmpPasswordFile.Close()
+
+			if _, err := tmpPasswordFile.WriteString(becomePassword); err != nil {
+				return fmt.Errorf("failed to write Windows become password: %w", err)
+			}
+
+			ansibleCmd.Args = append(ansibleCmd.Args, "--become-password-file", tmpPasswordFile.Name())
+			jobLogger.Info().Msg("Using Windows runas with become password")
+		}
+
+		// Add verbose flag for debugging Windows connections
+		ansibleCmd.Args = append(ansibleCmd.Args, "-vvv")
+
+		jobLogger.Info().
+			Str("winrm_user", winrmUser).
+			Str("password_length", fmt.Sprintf("%d", len(winrmPassword))).
+			Msg("Using Windows WinRM authentication")
+	} else {
+		jobLogger.Warn().Msg("No Windows credentials found in Vault - connections may fail")
+	}
+
+	return nil
+}
+
+// getWindowsUser retrieves Windows username from Vault
+func (p *JobProcessor) getWindowsUser() string {
+	if winrmSecret, err := p.server.VaultClient.GetSecret("ansible/winrm"); err == nil {
+		if username, exists := winrmSecret["username"]; exists {
+			if usernameStr, ok := username.(string); ok {
+				return usernameStr
+			}
+		}
+	}
+	return ""
+}
+
+// getWindowsPassword retrieves Windows password from Vault
+func (p *JobProcessor) getWindowsPassword() string {
+	if winrmSecret, err := p.server.VaultClient.GetSecret("ansible/winrm"); err == nil {
+		if password, exists := winrmSecret["password"]; exists {
+			if passwordStr, ok := password.(string); ok {
+				return passwordStr
+			}
+		}
+	}
+	return ""
+}
+
+// getWindowsBecomePassword retrieves Windows become/runas password from Vault
+func (p *JobProcessor) getWindowsBecomePassword() string {
+	if becomeSecret, err := p.server.VaultClient.GetSecret("ansible/winrm-become"); err == nil {
+		if password, exists := becomeSecret["password"]; exists {
 			if passwordStr, ok := password.(string); ok {
 				return passwordStr
 			}
