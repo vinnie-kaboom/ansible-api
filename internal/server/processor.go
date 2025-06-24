@@ -565,7 +565,7 @@ func (p *JobProcessor) configureAuthentication(ansibleCmd *exec.Cmd, inventoryFi
 }
 
 // configureLinuxAuthentication configures authentication for Linux targets (existing logic)
-func (p *JobProcessor) configureLinuxAuthentication(ansibleCmd *exec.Cmd, inventoryStr string, envVars *[]string, jobLogger zerolog.Logger) error {
+func (p *JobProcessor) configureLinuxAuthentication(ansibleCmd *exec.Cmd, _ string, _ *[]string, jobLogger zerolog.Logger) error {
 	// Add become password from Vault if available, skip for passwordless sudo
 	if sudoPassword := p.getSudoPassword(); sudoPassword != "" {
 		// Try using become password file instead of environment variable
