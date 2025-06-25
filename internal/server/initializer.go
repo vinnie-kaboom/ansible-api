@@ -419,9 +419,10 @@ func (s *Server) registerRoutes() {
 	r.Use(gin.Logger())
 	r.Use(gin.Recovery())
 
-	r.GET("/api/health", s.handleHealth)
-	r.POST("/api/playbook/run", s.handlePlaybookRun)
+	r.GET("/health", s.handleHealth)
+	r.POST("/api/execute", s.handlePlaybookRun)
 	r.GET("/api/jobs", s.handleJobs)
+	r.GET("/api/jobs/summary", s.handleJobsSummary)
 	r.GET("/api/jobs/:job_id", s.handleJobStatus)
 	r.POST("/api/jobs/:job_id/retry", s.handleJobRetry)
 }
@@ -451,7 +452,7 @@ func (s *Server) handleHealth(c *gin.Context) {
 	defer func() {
 		duration := time.Since(startTime)
 		s.Logger.Debug().
-			Str("endpoint", "/api/health").
+			Str("endpoint", "/health").
 			Str("method", c.Request.Method).
 			Str("remote_addr", c.ClientIP()).
 			Dur("duration", duration).
@@ -468,7 +469,7 @@ func (s *Server) handlePlaybookRun(c *gin.Context) {
 	// Create a logger with request context
 	reqLogger := s.Logger.With().
 		Str("request_id", requestID).
-		Str("endpoint", "/api/playbook/run").
+		Str("endpoint", "/api/execute").
 		Str("method", c.Request.Method).
 		Str("remote_addr", c.ClientIP()).
 		Str("user_agent", c.Request.UserAgent()).
@@ -583,11 +584,218 @@ func (s *Server) handleJobs(c *gin.Context) {
 	jobCount := len(jobs)
 	s.JobMutex.RUnlock()
 
+	format := c.DefaultQuery("format", "summary")
+
 	s.Logger.Debug().
 		Int("job_count", jobCount).
+		Str("format", format).
 		Msg("Retrieved jobs list")
 
-	c.JSON(200, jobs)
+	if format == "raw" {
+		// Return raw format for backward compatibility
+		c.JSON(200, jobs)
+		return
+	}
+
+	// Enhanced summary format
+	type JobSummary struct {
+		ID           string `json:"id"`
+		Status       string `json:"status"`
+		Repository   string `json:"repository"`
+		Playbook     string `json:"playbook"`
+		TargetHosts  string `json:"target_hosts"`
+		StartTime    string `json:"start_time"`
+		EndTime      string `json:"end_time,omitempty"`
+		Duration     string `json:"duration,omitempty"`
+		RetryCount   int    `json:"retry_count"`
+		StatusEmoji  string `json:"status_emoji"`
+		ShortSummary string `json:"short_summary"`
+	}
+
+	type JobsResponse struct {
+		TotalJobs int          `json:"total_jobs"`
+		Jobs      []JobSummary `json:"jobs"`
+		Summary   struct {
+			Completed int `json:"completed"`
+			Failed    int `json:"failed"`
+			Running   int `json:"running"`
+			Queued    int `json:"queued"`
+		} `json:"summary"`
+	}
+
+	response := JobsResponse{
+		TotalJobs: jobCount,
+		Jobs:      make([]JobSummary, 0, jobCount),
+	}
+
+	// Process jobs and create summaries
+	for _, job := range jobs {
+		var duration string
+		var endTimeStr string
+		if !job.EndTime.IsZero() {
+			duration = job.EndTime.Sub(job.StartTime).Truncate(time.Second).String()
+			endTimeStr = job.EndTime.Format("2006-01-02 15:04:05")
+		} else if job.Status == "running" {
+			duration = time.Since(job.StartTime).Truncate(time.Second).String() + " (ongoing)"
+		}
+
+		statusEmoji := "⏳"
+		switch job.Status {
+		case "completed":
+			statusEmoji = "✅"
+			response.Summary.Completed++
+		case "failed":
+			statusEmoji = "❌"
+			response.Summary.Failed++
+		case "running":
+			statusEmoji = "🔄"
+			response.Summary.Running++
+		case "queued":
+			statusEmoji = "⏳"
+			response.Summary.Queued++
+		}
+
+		// Create short summary
+		shortSummary := fmt.Sprintf("%s %s on %s", statusEmoji, job.PlaybookPath, job.TargetHosts)
+		if duration != "" {
+			shortSummary += " (" + duration + ")"
+		}
+
+		jobSummary := JobSummary{
+			ID:           job.ID,
+			Status:       job.Status,
+			Repository:   job.RepositoryURL,
+			Playbook:     job.PlaybookPath,
+			TargetHosts:  job.TargetHosts,
+			StartTime:    job.StartTime.Format("2006-01-02 15:04:05"),
+			EndTime:      endTimeStr,
+			Duration:     duration,
+			RetryCount:   job.RetryCount,
+			StatusEmoji:  statusEmoji,
+			ShortSummary: shortSummary,
+		}
+
+		response.Jobs = append(response.Jobs, jobSummary)
+	}
+
+	c.JSON(200, response)
+}
+
+func (s *Server) handleJobsSummary(c *gin.Context) {
+	startTime := time.Now()
+	defer func() {
+		duration := time.Since(startTime)
+		s.Logger.Debug().
+			Str("endpoint", "/api/jobs/summary").
+			Str("method", c.Request.Method).
+			Str("remote_addr", c.ClientIP()).
+			Dur("duration", duration).
+			Msg("Jobs summary request completed")
+	}()
+
+	s.JobMutex.RLock()
+	jobs := s.Jobs
+	jobCount := len(jobs)
+	s.JobMutex.RUnlock()
+
+	type QuickSummary struct {
+		JobID      string `json:"job_id"`
+		Status     string `json:"status"`
+		Playbook   string `json:"playbook"`
+		Target     string `json:"target"`
+		Duration   string `json:"duration"`
+		StartTime  string `json:"start_time"`
+		StatusIcon string `json:"status_icon"`
+	}
+
+	type SummaryResponse struct {
+		Overview struct {
+			TotalJobs int `json:"total_jobs"`
+			Completed int `json:"completed"`
+			Failed    int `json:"failed"`
+			Running   int `json:"running"`
+			Queued    int `json:"queued"`
+		} `json:"overview"`
+		RecentJobs []QuickSummary `json:"recent_jobs"`
+	}
+
+	response := SummaryResponse{}
+	response.Overview.TotalJobs = jobCount
+
+	// Create a slice to sort jobs by start time
+	type sortableJob struct {
+		job       *Job
+		startTime time.Time
+	}
+
+	sortedJobs := make([]sortableJob, 0, jobCount)
+	for _, job := range jobs {
+		sortedJobs = append(sortedJobs, sortableJob{job: job, startTime: job.StartTime})
+
+		// Count by status
+		switch job.Status {
+		case "completed":
+			response.Overview.Completed++
+		case "failed":
+			response.Overview.Failed++
+		case "running":
+			response.Overview.Running++
+		case "queued":
+			response.Overview.Queued++
+		}
+	}
+
+	// Sort by start time (most recent first)
+	for i := 0; i < len(sortedJobs)-1; i++ {
+		for j := i + 1; j < len(sortedJobs); j++ {
+			if sortedJobs[i].startTime.Before(sortedJobs[j].startTime) {
+				sortedJobs[i], sortedJobs[j] = sortedJobs[j], sortedJobs[i]
+			}
+		}
+	}
+
+	// Take up to 10 most recent jobs
+	limit := 10
+	if len(sortedJobs) < limit {
+		limit = len(sortedJobs)
+	}
+
+	for i := 0; i < limit; i++ {
+		job := sortedJobs[i].job
+
+		var duration string
+		if !job.EndTime.IsZero() {
+			duration = job.EndTime.Sub(job.StartTime).Truncate(time.Second).String()
+		} else if job.Status == "running" {
+			duration = time.Since(job.StartTime).Truncate(time.Second).String() + " (ongoing)"
+		}
+
+		statusIcon := "⏳"
+		switch job.Status {
+		case "completed":
+			statusIcon = "✅"
+		case "failed":
+			statusIcon = "❌"
+		case "running":
+			statusIcon = "🔄"
+		case "queued":
+			statusIcon = "⏳"
+		}
+
+		summary := QuickSummary{
+			JobID:      job.ID,
+			Status:     job.Status,
+			Playbook:   job.PlaybookPath,
+			Target:     job.TargetHosts,
+			Duration:   duration,
+			StartTime:  job.StartTime.Format("15:04:05"),
+			StatusIcon: statusIcon,
+		}
+
+		response.RecentJobs = append(response.RecentJobs, summary)
+	}
+
+	c.JSON(200, response)
 }
 
 func (s *Server) handleJobStatus(c *gin.Context) {

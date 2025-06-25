@@ -223,20 +223,36 @@ func (d *DriftDetector) runAnsibleCheck(playbookPath, inventoryPath, targetHosts
 		}
 	}
 
-	// Set environment variables to eliminate warnings and sudo password prompts
+	// Set environment variables to eliminate warnings
 	envVars := []string{
 		"ANSIBLE_PYTHON_INTERPRETER=" + d.getPythonInterpreter(),
 		"ANSIBLE_HOST_KEY_CHECKING=False",
 	}
 
-	// Add become password from Vault if available, or empty for passwordless sudo
+	// Handle sudo password using --become-password-file instead of environment variables
+	var tmpPasswordFile *os.File
 	if sudoPassword := d.getSudoPassword(); sudoPassword != "" {
-		envVars = append(envVars, "ANSIBLE_BECOME_PASSWORD="+sudoPassword)
-		d.logger.Debug().Msg("Using sudo password from Vault for privilege escalation")
+		// Create temporary password file
+		var err error
+		tmpPasswordFile, err = os.CreateTemp("", "ansible-become-pass-*")
+		if err == nil {
+			defer func() {
+				tmpPasswordFile.Close()
+				os.Remove(tmpPasswordFile.Name())
+			}()
+
+			if _, err := tmpPasswordFile.WriteString(sudoPassword); err == nil {
+				tmpPasswordFile.Close()
+				cmd.Args = append(cmd.Args, "--become-password-file", tmpPasswordFile.Name())
+				d.logger.Debug().Msg("Using sudo password file for privilege escalation")
+			} else {
+				d.logger.Warn().Err(err).Msg("Failed to write sudo password file")
+			}
+		} else {
+			d.logger.Warn().Err(err).Msg("Failed to create sudo password file")
+		}
 	} else {
-		// Set empty password for passwordless sudo
-		envVars = append(envVars, "ANSIBLE_BECOME_PASSWORD=")
-		d.logger.Debug().Msg("Using empty password for passwordless sudo")
+		d.logger.Debug().Msg("No sudo password configured - using passwordless sudo")
 	}
 
 	cmd.Env = append(os.Environ(), envVars...)
@@ -325,20 +341,36 @@ func (d *DriftDetector) remediateDrift(playbookPath, inventoryPath, targetHosts 
 		}
 	}
 
-	// Set environment variables to eliminate warnings and sudo password prompts
+	// Set environment variables to eliminate warnings
 	envVars := []string{
 		"ANSIBLE_PYTHON_INTERPRETER=" + d.getPythonInterpreter(),
 		"ANSIBLE_HOST_KEY_CHECKING=False",
 	}
 
-	// Add become password from Vault if available, or empty for passwordless sudo
+	// Handle sudo password using --become-password-file instead of environment variables
+	var tmpPasswordFile *os.File
 	if sudoPassword := d.getSudoPassword(); sudoPassword != "" {
-		envVars = append(envVars, "ANSIBLE_BECOME_PASSWORD="+sudoPassword)
-		d.logger.Debug().Msg("Using sudo password from Vault for privilege escalation")
+		// Create temporary password file
+		var err error
+		tmpPasswordFile, err = os.CreateTemp("", "ansible-become-pass-*")
+		if err == nil {
+			defer func() {
+				tmpPasswordFile.Close()
+				os.Remove(tmpPasswordFile.Name())
+			}()
+
+			if _, err := tmpPasswordFile.WriteString(sudoPassword); err == nil {
+				tmpPasswordFile.Close()
+				cmd.Args = append(cmd.Args, "--become-password-file", tmpPasswordFile.Name())
+				d.logger.Debug().Msg("Using sudo password file for privilege escalation")
+			} else {
+				d.logger.Warn().Err(err).Msg("Failed to write sudo password file")
+			}
+		} else {
+			d.logger.Warn().Err(err).Msg("Failed to create sudo password file")
+		}
 	} else {
-		// Set empty password for passwordless sudo
-		envVars = append(envVars, "ANSIBLE_BECOME_PASSWORD=")
-		d.logger.Debug().Msg("Using empty password for passwordless sudo")
+		d.logger.Debug().Msg("No sudo password configured - using passwordless sudo")
 	}
 
 	cmd.Env = append(os.Environ(), envVars...)

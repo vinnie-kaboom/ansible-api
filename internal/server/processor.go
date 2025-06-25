@@ -261,6 +261,19 @@ func (p *JobProcessor) processJob(job *Job) {
 	jobLogger.Info().Msg("Executing Ansible playbook")
 	err = ansibleCmd.Run()
 
+	// Clean up temporary password file if it exists
+	for _, env := range ansibleCmd.Env {
+		if strings.HasPrefix(env, "ANSIBLE_TEMP_PASS_FILE=") {
+			tempFile := strings.TrimPrefix(env, "ANSIBLE_TEMP_PASS_FILE=")
+			if removeErr := os.Remove(tempFile); removeErr != nil {
+				jobLogger.Error().Err(removeErr).Str("temp_file", tempFile).Msg("Failed to clean up temporary password file")
+			} else {
+				jobLogger.Debug().Str("temp_file", tempFile).Msg("Cleaned up temporary password file")
+			}
+			break
+		}
+	}
+
 	// Capture the raw output
 	rawOutput := stdout.String()
 	rawError := stderr.String()
@@ -573,17 +586,23 @@ func (p *JobProcessor) configureLinuxAuthentication(ansibleCmd *exec.Cmd, _ stri
 		if err != nil {
 			return fmt.Errorf("failed to create temporary password file: %w", err)
 		}
-		defer os.Remove(tmpPasswordFile.Name())
-		defer tmpPasswordFile.Close()
 
 		if _, err := tmpPasswordFile.WriteString(sudoPassword); err != nil {
+			tmpPasswordFile.Close()
+			os.Remove(tmpPasswordFile.Name())
 			return fmt.Errorf("failed to write password to temporary file: %w", err)
 		}
+
+		// Close the file but don't remove it yet - Ansible needs to read it
+		tmpPasswordFile.Close()
 
 		ansibleCmd.Args = append(ansibleCmd.Args, "--become", "--become-method=sudo")
 		ansibleCmd.Args = append(ansibleCmd.Args, "--become-password-file", tmpPasswordFile.Name())
 		// Add verbose flag to debug privilege escalation
 		ansibleCmd.Args = append(ansibleCmd.Args, "-vvv")
+
+		// Store the filename for cleanup after Ansible execution
+		ansibleCmd.Env = append(ansibleCmd.Env, "ANSIBLE_TEMP_PASS_FILE="+tmpPasswordFile.Name())
 
 		jobLogger.Info().
 			Str("password_length", fmt.Sprintf("%d", len(sudoPassword))).
@@ -625,14 +644,19 @@ func (p *JobProcessor) configureWindowsAuthentication(ansibleCmd *exec.Cmd, inve
 			if err != nil {
 				return fmt.Errorf("failed to create Windows become password file: %w", err)
 			}
-			defer os.Remove(tmpPasswordFile.Name())
-			defer tmpPasswordFile.Close()
 
 			if _, err := tmpPasswordFile.WriteString(becomePassword); err != nil {
+				tmpPasswordFile.Close()
+				os.Remove(tmpPasswordFile.Name())
 				return fmt.Errorf("failed to write Windows become password: %w", err)
 			}
 
+			// Close the file but don't remove it yet - Ansible needs to read it
+			tmpPasswordFile.Close()
+
 			ansibleCmd.Args = append(ansibleCmd.Args, "--become-password-file", tmpPasswordFile.Name())
+			// Store the filename for cleanup after Ansible execution
+			*envVars = append(*envVars, "ANSIBLE_TEMP_PASS_FILE="+tmpPasswordFile.Name())
 			jobLogger.Info().Msg("Using Windows runas with become password")
 		}
 
