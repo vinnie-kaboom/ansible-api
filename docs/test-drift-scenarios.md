@@ -208,7 +208,7 @@ sudo grep "server_tokens" /etc/nginx/conf.d/custom.conf  # Should be "off"
 ---
 
 ## Test Scenario 7: Cross-platform Compatibility Test
-
+f
 ### Test: Verify Role Idempotency
 
 ```bash
