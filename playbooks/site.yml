@@ -5,10 +5,11 @@
   gather_facts: yes
   
   tasks:
-    - name: Update package cache
-      package:
+    - name: Update package cache (RedHat/CentOS)
+      yum:
         update_cache: yes
       when: ansible_os_family == "RedHat"
+      changed_when: false
 
     - name: Install nginx
       package:
@@ -51,15 +52,15 @@
 
     - name: Ensure nginx directories exist
       file:
-        path: "{{ item }}"
+        path: "{{ item.path }}"
         state: directory
         mode: '0755'
-        owner: root
-        group: root
+        owner: "{{ item.owner }}"
+        group: "{{ item.group }}"
       loop:
-        - /etc/nginx/conf.d
-        - /var/log/nginx
-        - /var/cache/nginx
+        - { path: "/etc/nginx/conf.d", owner: "root", group: "root" }
+        - { path: "/var/log/nginx", owner: "nginx", group: "nginx" }
+        - { path: "/var/cache/nginx", owner: "nginx", group: "nginx" }
 
     - name: Remove default nginx config that might conflict
       file:
@@ -124,17 +125,7 @@
         create_home: no
       ignore_errors: yes
 
-    - name: Set proper ownership for nginx directories
-      file:
-        path: "{{ item }}"
-        owner: nginx
-        group: nginx
-        mode: '0755'
-        state: directory
-      loop:
-        - /var/cache/nginx
-        - /var/log/nginx
-      ignore_errors: yes
+
 
     - name: Set SELinux boolean for nginx
       seboolean:
@@ -238,19 +229,21 @@
         url: "http://{{ ansible_default_ipv4.address }}"
         method: GET
         timeout: 10
+        status_code: [200, 403]
       register: nginx_test
       ignore_errors: yes
+      changed_when: false
 
     - name: Display nginx status
       debug:
         msg: 
           - "Nginx installation completed"
           - "Service status: {{ nginx_service.state | default('unknown') }}"
-          - "HTTP test: {{ 'SUCCESS' if nginx_test.status == 200 else 'FAILED' }}"
+          - "HTTP test: {{ 'SUCCESS' if nginx_test.status is defined and nginx_test.status == 200 else 'FAILED' }}"
 
   handlers:
     - name: reload nginx
       service:
         name: nginx
         state: reloaded
-      when: nginx_service.state == "started" 
+      when: nginx_service is defined and nginx_service.state == "started" 
