@@ -17,6 +17,76 @@ import (
 	"golang.org/x/time/rate"
 )
 
+// API Audit Event types
+const (
+	APIAuditRequestReceived    = "api_request_received"
+	APIAuditRequestValidated   = "api_request_validated"
+	APIAuditRequestFailed      = "api_request_failed"
+	APIAuditJobCreated         = "api_job_created"
+	APIAuditRateLimitExceeded  = "api_rate_limit_exceeded"
+	APIAuditUnauthorizedAccess = "api_unauthorized_access"
+	APIAuditDataAccess         = "api_data_access"
+)
+
+// auditAPIRequest creates comprehensive audit logs for API requests
+func (s *Server) auditAPIRequest(c *gin.Context, req interface{}, eventType string, additionalFields map[string]interface{}) {
+	// Base audit fields
+	auditFields := map[string]interface{}{
+		"audit_event":    eventType,
+		"client_ip":      c.ClientIP(),
+		"user_agent":     c.Request.UserAgent(),
+		"request_method": c.Request.Method,
+		"request_uri":    c.Request.RequestURI,
+		"endpoint":       c.FullPath(),
+		"timestamp":      time.Now(),
+		"component":      "api_audit",
+	}
+
+	// Add request headers for security analysis
+	auditFields["content_type"] = c.GetHeader("Content-Type")
+	auditFields["content_length"] = c.Request.ContentLength
+	auditFields["referer"] = c.GetHeader("Referer")
+	auditFields["accept"] = c.GetHeader("Accept")
+
+	// Add X-Forwarded headers if present (for proxy analysis)
+	if xForwardedFor := c.GetHeader("X-Forwarded-For"); xForwardedFor != "" {
+		auditFields["x_forwarded_for"] = xForwardedFor
+	}
+	if xRealIP := c.GetHeader("X-Real-IP"); xRealIP != "" {
+		auditFields["x_real_ip"] = xRealIP
+	}
+
+	// Merge additional fields
+	for k, v := range additionalFields {
+		auditFields[k] = v
+	}
+
+	// Create structured log entry
+	logEvent := s.Logger.Info()
+	for key, value := range auditFields {
+		switch v := value.(type) {
+		case string:
+			logEvent = logEvent.Str(key, v)
+		case int:
+			logEvent = logEvent.Int(key, v)
+		case int64:
+			logEvent = logEvent.Int64(key, v)
+		case float64:
+			logEvent = logEvent.Float64(key, v)
+		case bool:
+			logEvent = logEvent.Bool(key, v)
+		case time.Time:
+			logEvent = logEvent.Time(key, v)
+		case time.Duration:
+			logEvent = logEvent.Dur(key, v)
+		default:
+			logEvent = logEvent.Interface(key, v)
+		}
+	}
+
+	logEvent.Msg("API audit event")
+}
+
 // Config methods
 func (c *Config) SetIntValue(key string, value interface{}) {
 	if str, ok := value.(string); ok {
@@ -482,9 +552,21 @@ func (s *Server) handlePlaybookRun(c *gin.Context) {
 			Msg("Playbook run request completed")
 	}()
 
+	// Audit: API request received
+	s.auditAPIRequest(c, nil, APIAuditRequestReceived, map[string]interface{}{
+		"request_id":    requestID,
+		"endpoint_type": "playbook_execution",
+	})
+
 	reqLogger.Info().Msg("Received playbook run request")
 
 	if !s.RateLimiter.Allow() {
+		// Audit: Rate limit exceeded
+		s.auditAPIRequest(c, nil, APIAuditRateLimitExceeded, map[string]interface{}{
+			"request_id":                     requestID,
+			"rate_limit_requests_per_second": s.Config.RateLimit,
+		})
+
 		reqLogger.Warn().Msg("Rate limit exceeded")
 		c.JSON(429, gin.H{"error": "Too many requests"})
 		return
@@ -492,6 +574,13 @@ func (s *Server) handlePlaybookRun(c *gin.Context) {
 
 	var req PlaybookRequest
 	if err := c.ShouldBindJSON(&req); err != nil {
+		// Audit: Invalid request
+		s.auditAPIRequest(c, &req, APIAuditRequestFailed, map[string]interface{}{
+			"request_id":     requestID,
+			"error":          err.Error(),
+			"failure_reason": "invalid_json_body",
+		})
+
 		reqLogger.Error().
 			Err(err).
 			Str("content_type", c.GetHeader("Content-Type")).
@@ -500,6 +589,16 @@ func (s *Server) handlePlaybookRun(c *gin.Context) {
 		c.JSON(400, gin.H{"error": "Invalid request body"})
 		return
 	}
+
+	// Audit: Request parsed successfully
+	s.auditAPIRequest(c, &req, APIAuditRequestValidated, map[string]interface{}{
+		"request_id":       requestID,
+		"repository_url":   req.RepositoryURL,
+		"playbook_path":    req.PlaybookPath,
+		"target_hosts":     req.TargetHosts,
+		"inventory_groups": len(req.Inventory),
+		"has_inventory":    len(req.Inventory) > 0,
+	})
 
 	reqLogger.Info().
 		Str("repository_url", req.RepositoryURL).
@@ -511,6 +610,15 @@ func (s *Server) handlePlaybookRun(c *gin.Context) {
 	// Validate request
 	validator := NewRequestValidator()
 	if err := validator.ValidatePlaybookRequest(&req); err != nil {
+		// Audit: Validation failed
+		s.auditAPIRequest(c, &req, APIAuditRequestFailed, map[string]interface{}{
+			"request_id":     requestID,
+			"error":          err.Error(),
+			"failure_reason": "request_validation_failed",
+			"repository_url": req.RepositoryURL,
+			"playbook_path":  req.PlaybookPath,
+		})
+
 		reqLogger.Error().
 			Err(err).
 			Str("repository_url", req.RepositoryURL).
@@ -523,6 +631,15 @@ func (s *Server) handlePlaybookRun(c *gin.Context) {
 	// Create and queue job
 	job := s.createJob(&req)
 	s.queueJob(job)
+
+	// Audit: Job created successfully
+	s.auditAPIRequest(c, &req, APIAuditJobCreated, map[string]interface{}{
+		"request_id":   requestID,
+		"job_id":       job.ID,
+		"job_status":   job.Status,
+		"queue_length": len(s.JobQueue),
+		"total_jobs":   len(s.Jobs),
+	})
 
 	reqLogger.Info().
 		Str("job_id", job.ID).
@@ -569,6 +686,8 @@ func (s *Server) queueJob(job *Job) {
 
 func (s *Server) handleJobs(c *gin.Context) {
 	startTime := time.Now()
+	requestID := fmt.Sprintf("req-%d", time.Now().UnixNano())
+
 	defer func() {
 		duration := time.Since(startTime)
 		s.Logger.Debug().
@@ -579,12 +698,27 @@ func (s *Server) handleJobs(c *gin.Context) {
 			Msg("Jobs list request completed")
 	}()
 
+	// Audit: Data access request
+	s.auditAPIRequest(c, nil, APIAuditDataAccess, map[string]interface{}{
+		"request_id":    requestID,
+		"endpoint_type": "jobs_list",
+		"data_type":     "job_information",
+	})
+
 	s.JobMutex.RLock()
 	jobs := s.Jobs
 	jobCount := len(jobs)
 	s.JobMutex.RUnlock()
 
 	format := c.DefaultQuery("format", "summary")
+
+	// Audit: Data retrieved
+	s.auditAPIRequest(c, nil, APIAuditDataAccess, map[string]interface{}{
+		"request_id":     requestID,
+		"data_retrieved": "jobs_list",
+		"job_count":      jobCount,
+		"format":         format,
+	})
 
 	s.Logger.Debug().
 		Int("job_count", jobCount).

@@ -15,6 +15,68 @@ import (
 	"gopkg.in/src-d/go-git.v4"
 )
 
+// AuditEvent represents different types of audit events
+type AuditEvent string
+
+const (
+	AuditJobStarted             AuditEvent = "job_started"
+	AuditJobCompleted           AuditEvent = "job_completed"
+	AuditJobFailed              AuditEvent = "job_failed"
+	AuditAuthenticationStarted  AuditEvent = "authentication_started"
+	AuditAuthenticationSuccess  AuditEvent = "authentication_success"
+	AuditAuthenticationFailed   AuditEvent = "authentication_failed"
+	AuditRepositoryCloneStarted AuditEvent = "repository_clone_started"
+	AuditRepositoryCloneSuccess AuditEvent = "repository_clone_success"
+	AuditRepositoryCloneFailed  AuditEvent = "repository_clone_failed"
+	AuditInventoryCreated       AuditEvent = "inventory_created"
+	AuditInventoryUsed          AuditEvent = "inventory_used"
+	AuditPlaybookExecutionStart AuditEvent = "playbook_execution_started"
+	AuditPlaybookExecutionEnd   AuditEvent = "playbook_execution_completed"
+	AuditSecretAccess           AuditEvent = "secret_accessed"
+	AuditSecurityEvent          AuditEvent = "security_event"
+	AuditResourceCleanup        AuditEvent = "resource_cleanup"
+)
+
+// auditLog creates a structured audit log entry with security and operational context
+func (p *JobProcessor) auditLog(event AuditEvent, job *Job) *zerolog.Event {
+	return p.server.Logger.Info().
+		Str("audit_event", string(event)).
+		Str("job_id", job.ID).
+		Str("repository", job.RepositoryURL).
+		Str("playbook", job.PlaybookPath).
+		Str("target_hosts", job.TargetHosts).
+		Time("timestamp", time.Now()).
+		Str("component", "audit")
+}
+
+// auditLogWithContext creates an audit log with additional context fields
+func (p *JobProcessor) auditLogWithContext(event AuditEvent, job *Job, fields map[string]interface{}) *zerolog.Event {
+	logEvent := p.auditLog(event, job)
+
+	for key, value := range fields {
+		switch v := value.(type) {
+		case string:
+			logEvent = logEvent.Str(key, v)
+		case int:
+			logEvent = logEvent.Int(key, v)
+		case int64:
+			logEvent = logEvent.Int64(key, v)
+		case float64:
+			logEvent = logEvent.Float64(key, v)
+		case bool:
+			logEvent = logEvent.Bool(key, v)
+		case time.Duration:
+			logEvent = logEvent.Dur(key, v)
+		case error:
+			logEvent = logEvent.AnErr(key, v)
+		default:
+			logEvent = logEvent.Interface(key, v)
+		}
+	}
+
+	return logEvent
+}
+
 func NewJobProcessor(server *Server) *JobProcessor {
 	return &JobProcessor{
 		server: server,
@@ -38,6 +100,12 @@ func (p *JobProcessor) processJob(job *Job) {
 		Str("target_hosts", job.TargetHosts).
 		Logger()
 
+	// Audit: Job started
+	p.auditLogWithContext(AuditJobStarted, job, map[string]interface{}{
+		"status":     "started",
+		"worker_pid": os.Getpid(),
+	}).Msg("Job processing initiated")
+
 	jobLogger.Info().Msg("Starting job processing")
 
 	p.server.JobMutex.Lock()
@@ -48,6 +116,21 @@ func (p *JobProcessor) processJob(job *Job) {
 	startTime := time.Now()
 	defer func() {
 		duration := time.Since(startTime)
+
+		// Audit: Job completion
+		auditFields := map[string]interface{}{
+			"duration_seconds": duration.Seconds(),
+			"final_status":     job.Status,
+		}
+
+		if job.Status == "completed" {
+			p.auditLogWithContext(AuditJobCompleted, job, auditFields).
+				Msg("Job completed successfully")
+		} else {
+			p.auditLogWithContext(AuditJobFailed, job, auditFields).
+				Msg("Job failed")
+		}
+
 		jobLogger.Info().
 			Dur("duration", duration).
 			Str("final_status", job.Status).
@@ -57,16 +140,37 @@ func (p *JobProcessor) processJob(job *Job) {
 	tmpDir, err := os.MkdirTemp("", "repo")
 	if err != nil {
 		jobLogger.Error().Err(err).Msg("Failed to create temporary directory")
+		p.auditLogWithContext(AuditJobFailed, job, map[string]interface{}{
+			"error":         err.Error(),
+			"failure_stage": "temp_directory_creation",
+		}).Msg("Failed to create temporary directory")
 		p.updateJobStatus(job, "failed", "", err.Error())
 		return
 	}
 	defer func() {
+		// Audit: Resource cleanup
 		if err := os.RemoveAll(tmpDir); err != nil {
 			jobLogger.Error().Err(err).Str("tmp_dir", tmpDir).Msg("Failed to remove temporary directory")
+			p.auditLogWithContext(AuditResourceCleanup, job, map[string]interface{}{
+				"cleanup_error": err.Error(),
+				"tmp_dir":       tmpDir,
+				"success":       false,
+			}).Msg("Failed to cleanup temporary directory")
 		} else {
 			jobLogger.Debug().Str("tmp_dir", tmpDir).Msg("Temporary directory cleaned up")
+			p.auditLogWithContext(AuditResourceCleanup, job, map[string]interface{}{
+				"tmp_dir": tmpDir,
+				"success": true,
+			}).Msg("Temporary directory cleaned up successfully")
 		}
 	}()
+
+	// Audit: Authentication started
+	p.auditLogWithContext(AuditAuthenticationStarted, job, map[string]interface{}{
+		"auth_method":     "github_app",
+		"app_id":          p.server.GithubAppID,
+		"installation_id": p.server.GithubInstallationID,
+	}).Msg("Starting GitHub App authentication")
 
 	jobLogger.Info().Msg("Authenticating with GitHub App")
 
@@ -77,6 +181,14 @@ func (p *JobProcessor) processJob(job *Job) {
 		APIBaseURL:     p.server.GithubAPIBaseURL,
 	})
 	if err != nil {
+		// Audit: Authentication failed
+		p.auditLogWithContext(AuditAuthenticationFailed, job, map[string]interface{}{
+			"error":           err.Error(),
+			"app_id":          p.server.GithubAppID,
+			"installation_id": p.server.GithubInstallationID,
+			"api_base_url":    p.server.GithubAPIBaseURL,
+		}).Msg("GitHub App authentication failed")
+
 		jobLogger.Error().
 			Err(err).
 			Int("app_id", p.server.GithubAppID).
@@ -87,11 +199,26 @@ func (p *JobProcessor) processJob(job *Job) {
 		return
 	}
 
+	// Audit: Authentication successful
+	p.auditLogWithContext(AuditAuthenticationSuccess, job, map[string]interface{}{
+		"app_id":          p.server.GithubAppID,
+		"installation_id": p.server.GithubInstallationID,
+		"token_received":  true,
+	}).Msg("GitHub App authentication successful")
+
 	jobLogger.Info().Msg("GitHub authentication successful")
 
 	repoPath := extractRepoPath(job.RepositoryURL)
 	host := extractHost(job.RepositoryURL)
 	cloneURL := githubapp.BuildCloneURL(token, repoPath, host)
+
+	// Audit: Repository clone started
+	p.auditLogWithContext(AuditRepositoryCloneStarted, job, map[string]interface{}{
+		"repository_path": repoPath,
+		"host":            host,
+		"tmp_dir":         tmpDir,
+		"clone_method":    "git",
+	}).Msg("Starting repository clone")
 
 	jobLogger.Info().
 		Str("repository", repoPath).
@@ -106,6 +233,13 @@ func (p *JobProcessor) processJob(job *Job) {
 		Progress: gitOutput,
 	})
 	if err != nil {
+		// Audit: Repository clone failed
+		p.auditLogWithContext(AuditRepositoryCloneFailed, job, map[string]interface{}{
+			"error":           err.Error(),
+			"repository_path": repoPath,
+			"host":            host,
+		}).Msg("Repository clone failed")
+
 		jobLogger.Error().
 			Err(err).
 			Str("repository", repoPath).
@@ -114,6 +248,12 @@ func (p *JobProcessor) processJob(job *Job) {
 		p.updateJobStatus(job, "failed", "", err.Error())
 		return
 	}
+
+	// Audit: Repository clone successful
+	p.auditLogWithContext(AuditRepositoryCloneSuccess, job, map[string]interface{}{
+		"repository_path":   repoPath,
+		"clone_destination": tmpDir,
+	}).Msg("Repository cloned successfully")
 
 	jobLogger.Info().Str("repository", repoPath).Msg("Repository cloned successfully")
 
@@ -129,9 +269,19 @@ func (p *JobProcessor) processJob(job *Job) {
 			jobLogger.Error().
 				Str("inventory_path", inventoryFilePath).
 				Msg("No inventory file found in repository and no inventory provided in request")
+			p.auditLogWithContext(AuditJobFailed, job, map[string]interface{}{
+				"error":          "No inventory file found",
+				"inventory_path": inventoryFilePath,
+				"failure_stage":  "inventory_validation",
+			}).Msg("No inventory file available")
 			p.updateJobStatus(job, "failed", "", "No inventory file found in repository and no inventory provided in request")
 			return
 		} else {
+			// Audit: Using repository inventory
+			p.auditLogWithContext(AuditInventoryUsed, job, map[string]interface{}{
+				"inventory_source": "repository",
+				"inventory_path":   inventoryFilePath,
+			}).Msg("Using repository inventory file")
 			jobLogger.Info().Str("inventory_path", inventoryFilePath).Msg("Using repository inventory file")
 		}
 	} else {
@@ -139,9 +289,21 @@ func (p *JobProcessor) processJob(job *Job) {
 		inventoryDir := filepath.Dir(inventoryFilePath)
 		if err := os.MkdirAll(inventoryDir, 0755); err != nil {
 			jobLogger.Error().Err(err).Str("inventory_dir", inventoryDir).Msg("Failed to create inventory directory")
+			p.auditLogWithContext(AuditJobFailed, job, map[string]interface{}{
+				"error":         err.Error(),
+				"inventory_dir": inventoryDir,
+				"failure_stage": "inventory_directory_creation",
+			}).Msg("Failed to create inventory directory")
 			p.updateJobStatus(job, "failed", "", err.Error())
 			return
 		}
+
+		// Audit: Creating inventory from request
+		p.auditLogWithContext(AuditInventoryCreated, job, map[string]interface{}{
+			"inventory_source": "request",
+			"inventory_groups": len(job.Inventory),
+			"inventory_path":   inventoryFilePath,
+		}).Msg("Creating inventory file from request")
 
 		jobLogger.Info().
 			Int("inventory_groups", len(job.Inventory)).
@@ -151,11 +313,17 @@ func (p *JobProcessor) processJob(job *Job) {
 		inventoryFile, err := os.Create(inventoryFilePath)
 		if err != nil {
 			jobLogger.Error().Err(err).Str("inventory_path", inventoryFilePath).Msg("Failed to create inventory file")
+			p.auditLogWithContext(AuditJobFailed, job, map[string]interface{}{
+				"error":          err.Error(),
+				"inventory_path": inventoryFilePath,
+				"failure_stage":  "inventory_file_creation",
+			}).Msg("Failed to create inventory file")
 			p.updateJobStatus(job, "failed", "", err.Error())
 			return
 		}
 		defer inventoryFile.Close()
 
+		totalHosts := 0
 		for group, hosts := range job.Inventory {
 			jobLogger.Debug().
 				Str("group", group).
@@ -164,9 +332,18 @@ func (p *JobProcessor) processJob(job *Job) {
 			fmt.Fprintf(inventoryFile, "[%s]\n", group)
 			for host, vars := range hosts {
 				fmt.Fprintf(inventoryFile, "%s %s\n", host, vars)
+				totalHosts++
 			}
 			fmt.Fprintf(inventoryFile, "\n")
 		}
+
+		// Audit: Inventory created successfully
+		p.auditLogWithContext(AuditInventoryCreated, job, map[string]interface{}{
+			"total_hosts":  totalHosts,
+			"groups_count": len(job.Inventory),
+			"success":      true,
+		}).Msg("Inventory file created successfully")
+
 		jobLogger.Info().Msg("Inventory file created successfully")
 	}
 
@@ -182,6 +359,13 @@ func (p *JobProcessor) processJob(job *Job) {
 			if strings.Contains(inventoryStr, "localhost") && strings.Contains(inventoryStr, "ansible_connection=local") {
 				targetHosts = "localhost"
 				jobLogger.Info().Str("auto_detected_targets", targetHosts).Msg("Auto-detected target hosts from inventory")
+
+				// Audit: Auto-detected targets
+				p.auditLogWithContext(AuditSecurityEvent, job, map[string]interface{}{
+					"event_type":       "target_auto_detection",
+					"detected_targets": targetHosts,
+					"detection_reason": "localhost_with_local_connection",
+				}).Msg("Auto-detected target hosts from inventory")
 			}
 		}
 	}
@@ -196,6 +380,13 @@ func (p *JobProcessor) processJob(job *Job) {
 	if sshKey, err := p.server.VaultClient.GetSecret("ansible/ssh-key"); err == nil {
 		if privateKey, exists := sshKey["private_key"]; exists {
 			if privateKeyStr, ok := privateKey.(string); ok {
+				// Audit: Secret access
+				p.auditLogWithContext(AuditSecretAccess, job, map[string]interface{}{
+					"secret_path":    "ansible/ssh-key",
+					"secret_type":    "ssh_private_key",
+					"access_purpose": "ansible_authentication",
+				}).Msg("SSH private key retrieved from Vault")
+
 				// Create temporary SSH key file
 				tmpKeyFile, err := os.CreateTemp("", "ansible-ssh-key-*")
 				if err == nil {
@@ -235,6 +426,16 @@ func (p *JobProcessor) processJob(job *Job) {
 	if sshKeyPath != "" {
 		ansibleCmd.Args = append(ansibleCmd.Args, "--private-key", sshKeyPath)
 	}
+
+	// Audit: Playbook execution started
+	p.auditLogWithContext(AuditPlaybookExecutionStart, job, map[string]interface{}{
+		"playbook_path":   playbookPath,
+		"ansible_command": strings.Join(ansibleCmd.Args, " "),
+		"working_dir":     ansibleCmd.Dir,
+		"target_hosts":    targetHosts,
+		"ssh_key_used":    sshKeyPath != "",
+		"env_vars_count":  len(envVars),
+	}).Msg("Starting Ansible playbook execution")
 
 	// Debug logging - show exact command and environment
 	jobLogger.Info().
@@ -284,9 +485,38 @@ func (p *JobProcessor) processJob(job *Job) {
 	job.EndTime = time.Now()
 	duration := job.EndTime.Sub(job.StartTime)
 
+	// Parse task results for audit logging
+	taskResults := p.parseTaskResults(rawOutput)
+	playRecap := p.parsePlayRecap(rawOutput)
+
+	totalTasks := len(taskResults)
+	failedTasks := 0
+	changedTasks := 0
+	for _, task := range taskResults {
+		if task.Failed {
+			failedTasks++
+		}
+		if task.Changed {
+			changedTasks++
+		}
+	}
+
 	if err != nil {
 		job.Status = "failed"
 		job.Error = err.Error()
+
+		// Audit: Playbook execution failed
+		p.auditLogWithContext(AuditPlaybookExecutionEnd, job, map[string]interface{}{
+			"execution_status":  "failed",
+			"duration_seconds":  duration.Seconds(),
+			"error":             err.Error(),
+			"total_tasks":       totalTasks,
+			"failed_tasks":      failedTasks,
+			"changed_tasks":     changedTasks,
+			"has_stderr_output": rawError != "",
+			"output_lines":      len(strings.Split(rawOutput, "\n")),
+		}).Msg("Ansible playbook execution failed")
+
 		jobLogger.Error().
 			Err(err).
 			Str("raw_output", rawOutput).
@@ -295,6 +525,32 @@ func (p *JobProcessor) processJob(job *Job) {
 			Msg("Ansible playbook execution failed")
 	} else {
 		job.Status = "completed"
+
+		// Calculate total stats from play recap
+		totalOk := 0
+		totalChanged := 0
+		totalFailed := 0
+		hostCount := len(playRecap)
+		for _, stats := range playRecap {
+			totalOk += stats.Ok
+			totalChanged += stats.Changed
+			totalFailed += stats.Failed
+		}
+
+		// Audit: Playbook execution completed successfully
+		p.auditLogWithContext(AuditPlaybookExecutionEnd, job, map[string]interface{}{
+			"execution_status": "success",
+			"duration_seconds": duration.Seconds(),
+			"total_tasks":      totalTasks,
+			"failed_tasks":     failedTasks,
+			"changed_tasks":    changedTasks,
+			"hosts_count":      hostCount,
+			"total_ok":         totalOk,
+			"total_changed":    totalChanged,
+			"total_failed":     totalFailed,
+			"output_lines":     len(strings.Split(rawOutput, "\n")),
+		}).Msg("Ansible playbook execution completed successfully")
+
 		jobLogger.Info().
 			Dur("duration", duration).
 			Msg("Ansible playbook execution completed successfully")
