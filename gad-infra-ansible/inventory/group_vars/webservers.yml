@@ -1,0 +1,40 @@
+---
+# Variables for webserver hosts
+
+# Nginx configuration
+nginx_user: nginx
+nginx_group: nginx
+nginx_port: 80
+nginx_ssl_port: 443
+nginx_document_root: /var/www/html
+nginx_error_log: /var/log/nginx/error.log
+nginx_access_log: /var/log/nginx/access.log
+nginx_worker_processes: auto
+nginx_worker_connections: 1024
+
+# Web content settings
+web_content_owner: nginx
+web_content_group: nginx
+web_content_mode: '0644'
+
+# SSL/TLS settings
+ssl_enabled: false
+ssl_cert_path: /etc/ssl/certs/nginx.crt
+ssl_key_path: /etc/ssl/private/nginx.key
+
+# Firewall settings
+firewall_services:
+  - http
+  - https
+
+# Security settings
+nginx_server_tokens: "off"
+nginx_client_max_body_size: "64m"
+
+# Backup settings
+nginx_config_backup: true
+web_content_backup: true
+
+# Log rotation
+nginx_logrotate_days: 30
+nginx_logrotate_size: "100M" 

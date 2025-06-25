@@ -1,0 +1,32 @@
+---
+# Global variables for all hosts
+
+# Python interpreter settings
+ansible_python_interpreter: python3
+
+# Connection settings
+ansible_host_key_checking: false
+
+# Privilege escalation
+ansible_become: true
+
+# Common packages for all systems
+common_packages:
+  - curl
+  - wget
+  - vim
+  - htop
+
+# Timezone setting
+system_timezone: "America/New_York"
+
+# Common users to create on all systems
+common_users:
+  - name: svcansible
+    groups: wheel
+    shell: /bin/bash
+    create_home: yes
+
+# Logging configuration
+log_level: info
+log_file: /var/log/ansible-managed.log 

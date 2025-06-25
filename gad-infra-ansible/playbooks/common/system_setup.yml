@@ -1,0 +1,84 @@
+---
+# Common system setup playbook
+# Basic system configuration applied to all hosts
+
+- name: Common system setup
+  hosts: all
+  become: yes
+  gather_facts: yes
+  
+  vars:
+    # Common packages for all systems
+    base_packages:
+      - curl
+      - wget
+      - vim
+      - htop
+      - net-tools
+      - rsync
+      - unzip
+  
+  tasks:
+    - name: Display system information
+      debug:
+        msg:
+          - "Setting up common configuration on {{ inventory_hostname }}"
+          - "OS: {{ ansible_distribution }} {{ ansible_distribution_version }}"
+          - "Architecture: {{ ansible_architecture }}"
+      tags:
+        - common
+        - debug
+
+    - name: Update package cache (RedHat/CentOS)
+      yum:
+        update_cache: yes
+      when: ansible_os_family == "RedHat"
+      changed_when: false
+      tags:
+        - common
+        - packages
+
+    - name: Update package cache (Debian/Ubuntu)
+      apt:
+        update_cache: yes
+        cache_valid_time: 3600
+      when: ansible_os_family == "Debian"
+      changed_when: false
+      tags:
+        - common
+        - packages
+
+    - name: Install common packages
+      package:
+        name: "{{ base_packages }}"
+        state: present
+      tags:
+        - common
+        - packages
+
+    - name: Set timezone
+      timezone:
+        name: "{{ system_timezone | default('America/New_York') }}"
+      tags:
+        - common
+        - timezone
+
+    - name: Create common log file
+      file:
+        path: "{{ log_file | default('/var/log/ansible-managed.log') }}"
+        state: touch
+        owner: root
+        group: root
+        mode: '0644'
+      tags:
+        - common
+        - logging
+
+    - name: Log system setup completion
+      lineinfile:
+        path: "{{ log_file | default('/var/log/ansible-managed.log') }}"
+        line: "{{ ansible_date_time.iso8601 }} - Common system setup completed on {{ inventory_hostname }}"
+        create: yes
+      tags:
+        - common
+        - logging 

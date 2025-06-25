@@ -1,0 +1,49 @@
+---
+# Handlers for webserver role
+
+- name: restart nginx
+  service:
+    name: "{{ nginx_service }}"
+    state: restarted
+  when: nginx_service_result is defined and nginx_service_result.state == "started"
+  listen: "restart nginx"
+
+- name: reload nginx
+  service:
+    name: "{{ nginx_service }}"
+    state: reloaded
+  when: nginx_service_result is defined and nginx_service_result.state == "started"
+  listen: "reload nginx"
+
+- name: stop nginx
+  service:
+    name: "{{ nginx_service }}"
+    state: stopped
+  listen: "stop nginx"
+
+- name: start nginx
+  service:
+    name: "{{ nginx_service }}"
+    state: started
+    enabled: yes
+  listen: "start nginx"
+
+- name: test nginx config
+  command: nginx -t
+  register: nginx_syntax_check
+  failed_when: nginx_syntax_check.rc != 0
+  listen: "test nginx config"
+
+- name: validate nginx config and reload
+  block:
+    - name: Test nginx configuration syntax
+      command: nginx -t
+      register: nginx_syntax_check
+      failed_when: nginx_syntax_check.rc != 0
+
+    - name: Reload nginx if config is valid
+      service:
+        name: "{{ nginx_service }}"
+        state: reloaded
+      when: nginx_syntax_check.rc == 0
+  listen: "validate and reload nginx" 

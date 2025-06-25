@@ -1,0 +1,43 @@
+---
+# Variables for Windows server hosts
+
+# WinRM connection settings
+ansible_winrm_transport: ntlm
+ansible_winrm_server_cert_validation: ignore
+ansible_winrm_operation_timeout_sec: 60
+ansible_winrm_read_timeout_sec: 70
+
+# Privilege escalation
+ansible_become_method: runas
+ansible_become_user: Administrator
+
+# PowerShell settings
+ansible_shell_type: powershell
+ansible_shell_executable: powershell
+
+# Windows features and roles
+windows_features:
+  - IIS-WebServerRole
+  - IIS-WebServer
+  - IIS-CommonHttpFeatures
+  - IIS-HttpErrors
+  - IIS-HttpRedirect
+
+# Chocolatey packages
+chocolatey_packages:
+  - googlechrome
+  - firefox
+  - 7zip
+  - notepadplusplus
+
+# Windows updates
+windows_updates_enabled: true
+windows_updates_reboot: false
+
+# Security settings
+windows_firewall_enabled: true
+windows_defender_enabled: true
+
+# Event log settings
+event_log_max_size: 100MB
+event_log_retention: 30 

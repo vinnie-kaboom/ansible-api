@@ -1,0 +1,162 @@
+---
+# Nginx uninstall playbook
+# Safely removes nginx and cleans up configuration
+
+- name: Uninstall nginx webserver
+  hosts: webservers
+  become: yes
+  gather_facts: yes
+  
+  vars:
+    # Configuration cleanup options
+    remove_config: true
+    remove_logs: false
+    remove_web_content: false
+    backup_before_removal: true
+  
+  tasks:
+    - name: Display uninstall information
+      debug:
+        msg:
+          - "Uninstalling nginx from {{ inventory_hostname }}"
+          - "OS: {{ ansible_distribution }} {{ ansible_distribution_version }}"
+          - "Remove config: {{ remove_config }}"
+          - "Remove logs: {{ remove_logs }}"
+      tags:
+        - uninstall
+        - debug
+
+    - name: Stop nginx service
+      service:
+        name: nginx
+        state: stopped
+      ignore_errors: yes
+      tags:
+        - uninstall
+        - service
+
+    - name: Disable nginx service
+      service:
+        name: nginx
+        enabled: no
+      ignore_errors: yes
+      tags:
+        - uninstall
+        - service
+
+    - name: Create backup directory
+      file:
+        path: "/root/nginx-backup-{{ ansible_date_time.epoch }}"
+        state: directory
+        mode: '0700'
+      register: backup_dir
+      when: backup_before_removal
+      tags:
+        - uninstall
+        - backup
+
+    - name: Backup nginx configuration
+      copy:
+        src: "{{ item }}"
+        dest: "{{ backup_dir.path }}"
+        remote_src: yes
+      loop:
+        - /etc/nginx
+        - /var/www/html
+      ignore_errors: yes
+      when: backup_before_removal and backup_dir is defined
+      tags:
+        - uninstall
+        - backup
+
+    - name: Remove firewall rules for nginx
+      ansible.posix.firewalld:
+        service: "{{ item }}"
+        permanent: yes
+        state: disabled
+        immediate: yes
+      loop:
+        - http
+        - https
+      when: ansible_os_family == "RedHat"
+      ignore_errors: yes
+      tags:
+        - uninstall
+        - firewall
+
+    - name: Remove nginx package (RedHat/CentOS)
+      yum:
+        name: nginx
+        state: absent
+        autoremove: yes
+      when: ansible_os_family == "RedHat"
+      tags:
+        - uninstall
+        - packages
+
+    - name: Remove nginx package (Debian/Ubuntu)
+      apt:
+        name: nginx
+        state: absent
+        purge: yes
+        autoremove: yes
+      when: ansible_os_family == "Debian"
+      tags:
+        - uninstall
+        - packages
+
+    - name: Remove nginx configuration directory
+      file:
+        path: /etc/nginx
+        state: absent
+      when: remove_config
+      tags:
+        - uninstall
+        - config
+
+    - name: Remove nginx log files
+      file:
+        path: /var/log/nginx
+        state: absent
+      when: remove_logs
+      tags:
+        - uninstall
+        - logs
+
+    - name: Remove nginx cache directory
+      file:
+        path: /var/cache/nginx
+        state: absent
+      tags:
+        - uninstall
+        - cache
+
+    - name: Remove web content
+      file:
+        path: /var/www/html
+        state: absent
+      when: remove_web_content
+      tags:
+        - uninstall
+        - content
+
+    - name: Remove nginx user
+      user:
+        name: nginx
+        state: absent
+        remove: yes
+      ignore_errors: yes
+      tags:
+        - uninstall
+        - users
+
+    - name: Display uninstall completion
+      debug:
+        msg:
+          - "Nginx uninstallation completed on {{ inventory_hostname }}"
+          - "Backup location: {{ backup_dir.path if backup_before_removal and backup_dir is defined else 'No backup created' }}"
+          - "Configuration removed: {{ remove_config }}"
+          - "Logs removed: {{ remove_logs }}"
+      tags:
+        - uninstall
+        - results 

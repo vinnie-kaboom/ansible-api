@@ -1,0 +1,58 @@
+---
+# Default variables for webserver role
+# These can be overridden by group_vars, host_vars, or playbook variables
+
+# Nginx package and service
+nginx_package: nginx
+nginx_service: nginx
+
+# Nginx configuration paths
+nginx_conf_dir: /etc/nginx
+nginx_conf_file: "{{ nginx_conf_dir }}/nginx.conf"
+nginx_conf_backup_file: "{{ nginx_conf_dir }}/nginx.conf.backup"
+nginx_vhost_dir: "{{ nginx_conf_dir }}/conf.d"
+nginx_default_vhost_file: "{{ nginx_vhost_dir }}/default.conf"
+
+# Nginx runtime settings (can be overridden by group_vars)
+nginx_user: nginx
+nginx_group: nginx
+nginx_worker_processes: auto
+nginx_worker_connections: 1024
+nginx_keepalive_timeout: 65
+nginx_types_hash_max_size: 2048
+
+# Nginx directories
+nginx_log_dir: /var/log/nginx
+nginx_cache_dir: /var/cache/nginx
+nginx_pid_file: /run/nginx.pid
+
+# Web content settings
+nginx_document_root: /var/www/html
+web_content_owner: nginx
+web_content_group: nginx
+
+# Nginx logs
+nginx_error_log: "{{ nginx_log_dir }}/error.log"
+nginx_access_log: "{{ nginx_log_dir }}/access.log"
+
+# Port configuration
+nginx_port: 80
+nginx_ssl_port: 443
+
+# SSL settings
+ssl_enabled: false
+
+# Firewall configuration
+firewall_services:
+  - http
+
+# Services to stop before nginx installation
+conflicting_services:
+  - httpd
+  - apache2
+
+# SELinux settings
+selinux_nginx_connect: true
+
+# Backup settings
+nginx_config_backup: true 

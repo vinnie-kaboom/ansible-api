@@ -1,0 +1,51 @@
+---
+# Meta information for webserver role
+
+galaxy_info:
+  author: GAD Infrastructure Team
+  description: Nginx webserver installation and configuration role
+  company: Southern Company
+  license: MIT
+  min_ansible_version: "2.9"
+  
+  platforms:
+    - name: EL
+      versions:
+        - 7
+        - 8
+        - 9
+    - name: Ubuntu
+      versions:
+        - 18.04
+        - 20.04
+        - 22.04
+    - name: Debian
+      versions:
+        - 10
+        - 11
+        - 12
+
+  galaxy_tags:
+    - webserver
+    - nginx
+    - web
+    - http
+    - server
+    - infrastructure
+
+dependencies:
+  - role: common_all
+    when: common_role_enabled | default(true)
+
+# Role variables that should be defined
+required_vars:
+  - nginx_user
+  - nginx_document_root
+  - nginx_port
+
+# Optional dependencies for enhanced functionality
+optional_dependencies:
+  - name: geerlingguy.firewall
+    condition: firewall_enabled | default(false)
+  - name: geerlingguy.security
+    condition: security_hardening_enabled | default(false) 

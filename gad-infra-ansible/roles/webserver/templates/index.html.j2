@@ -1,0 +1,131 @@
+<!DOCTYPE html>
+<html>
+<head>
+    <title>Welcome to nginx on {{ ansible_hostname }}!</title>
+    <meta charset="utf-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1">
+    <style>
+        body { 
+            font-family: 'Segoe UI', Tahoma, Geneva, Verdana, sans-serif; 
+            margin: 40px; 
+            background: linear-gradient(135deg, #667eea 0%, #764ba2 100%);
+            color: white;
+            min-height: 100vh;
+        }
+        .container { 
+            max-width: 900px; 
+            margin: 0 auto; 
+            background: rgba(255, 255, 255, 0.1);
+            border-radius: 15px;
+            padding: 30px;
+            backdrop-filter: blur(10px);
+            border: 1px solid rgba(255, 255, 255, 0.2);
+        }
+        .header { 
+            background: rgba(255, 255, 255, 0.1); 
+            padding: 30px; 
+            border-radius: 10px; 
+            margin-bottom: 30px;
+            text-align: center;
+        }
+        .content { 
+            margin-top: 20px; 
+        }
+        .info-grid {
+            display: grid;
+            grid-template-columns: repeat(auto-fit, minmax(250px, 1fr));
+            gap: 20px;
+            margin-top: 30px;
+        }
+        .info-card {
+            background: rgba(255, 255, 255, 0.1);
+            padding: 20px;
+            border-radius: 10px;
+            border: 1px solid rgba(255, 255, 255, 0.2);
+        }
+        .info-card h3 {
+            margin-top: 0;
+            color: #ffd700;
+        }
+        .status-badge {
+            display: inline-block;
+            padding: 5px 15px;
+            background: #28a745;
+            color: white;
+            border-radius: 20px;
+            font-size: 0.9em;
+            font-weight: bold;
+        }
+        .timestamp {
+            font-style: italic;
+            opacity: 0.8;
+            font-size: 0.9em;
+        }
+    </style>
+</head>
+<body>
+    <div class="container">
+        <div class="header">
+            <h1>🎉 Nginx Successfully Configured!</h1>
+            <p class="status-badge">✅ Service Running</p>
+            <p><strong>Server:</strong> {{ ansible_hostname }}</p>
+            <p><strong>IP Address:</strong> {{ ansible_default_ipv4.address | default('N/A') }}</p>
+            <p class="timestamp">Deployed: {{ ansible_date_time.iso8601 }}</p>
+        </div>
+        
+        <div class="content">
+            <h2>📊 System Information</h2>
+            
+            <div class="info-grid">
+                <div class="info-card">
+                    <h3>🖥️ Operating System</h3>
+                    <ul>
+                        <li><strong>OS:</strong> {{ ansible_distribution }} {{ ansible_distribution_version }}</li>
+                        <li><strong>Kernel:</strong> {{ ansible_kernel }}</li>
+                        <li><strong>Architecture:</strong> {{ ansible_architecture }}</li>
+                    </ul>
+                </div>
+                
+                <div class="info-card">
+                    <h3>🌐 Network</h3>
+                    <ul>
+                        <li><strong>Hostname:</strong> {{ ansible_hostname }}</li>
+                        <li><strong>FQDN:</strong> {{ ansible_fqdn }}</li>
+                        <li><strong>IPv4:</strong> {{ ansible_default_ipv4.address | default('N/A') }}</li>
+                    </ul>
+                </div>
+                
+                <div class="info-card">
+                    <h3>⚙️ Hardware</h3>
+                    <ul>
+                        <li><strong>CPU Cores:</strong> {{ ansible_processor_vcpus }}</li>
+                        <li><strong>Memory:</strong> {{ (ansible_memtotal_mb / 1024) | round(1) }} GB</li>
+                        <li><strong>Disk:</strong> {{ (ansible_devices[ansible_mounts[0].device.split('/')[-1]].size if ansible_devices else 'N/A') }}</li>
+                    </ul>
+                </div>
+                
+                <div class="info-card">
+                    <h3>🐳 Service Info</h3>
+                    <ul>
+                        <li><strong>Nginx Version:</strong> {{ nginx_version | default('Latest') }}</li>
+                        <li><strong>Document Root:</strong> {{ nginx_document_root }}</li>
+                        <li><strong>Config Path:</strong> {{ nginx_conf_file }}</li>
+                    </ul>
+                </div>
+            </div>
+            
+            <div style="margin-top: 40px; text-align: center;">
+                <h3>🔗 Quick Links</h3>
+                <p>
+                    <a href="/health" style="color: #ffd700; text-decoration: none; margin: 0 15px;">Health Check</a> |
+                    <a href="/nginx_status" style="color: #ffd700; text-decoration: none; margin: 0 15px;">Server Status</a>
+                </p>
+            </div>
+            
+            <div style="margin-top: 30px; text-align: center; opacity: 0.7;">
+                <p><small>🤖 Managed by Ansible • GAD Infrastructure • Role: webserver</small></p>
+            </div>
+        </div>
+    </div>
+</body>
+</html> 
