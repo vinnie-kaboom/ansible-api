@@ -290,20 +290,20 @@ vault kv put kv/ansible/github \
 
 ```bash
 vault kv put kv/ansible/api \
-  port="8080" \
-  worker_count="4" \
-  retention_hours="24" \
+********  port="8080" \
+**  **wo**rk**er_count="4" \
+  retention_hours="24" \****
   temp_patterns="*_site.yml,*_hosts" \
   rate_limit="10" \
   python_interpreter="/usr/bin/python3"
 ```
 
-> **Python Interpreter Configuration:** The `python_interpreter` field is optional. If not specified, the system will auto-detect the best available Python 3 interpreter. You can also override this with the `ANSIBLE_PYTHON_INTERPRETER_OVERRIDE` environment variable.
-
+**> **Python Interpreter Configuration:** The `python_interpreter` field is optional. If not specified, the system will auto-detect the best available Python 3 interpreter. You can also override this with the `ANSIBLE_PYTHON_INTERPRETER_OVERRIDE` environment variable.
+**
 4 Store SSH key:
 
 ```bash
-vault kv put kv/ansible/ssh-key \
+**vault kv put kv/ansible/ssh-key** \
   private_key=@/path/to/private_key.pem
 ```
 

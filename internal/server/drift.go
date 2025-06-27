@@ -223,10 +223,14 @@ func (d *DriftDetector) runAnsibleCheck(playbookPath, inventoryPath, targetHosts
 		}
 	}
 
-	// Set environment variables to eliminate warnings
+	// Set environment variables to eliminate warnings and fix role path
+	repoRoot := filepath.Dir(filepath.Dir(playbookPath)) // Go up from playbooks/webservers to repo root
+	rolesPath := filepath.Join(repoRoot, "roles")
+
 	envVars := []string{
 		"ANSIBLE_PYTHON_INTERPRETER=" + d.getPythonInterpreter(),
 		"ANSIBLE_HOST_KEY_CHECKING=False",
+		"ANSIBLE_ROLES_PATH=" + rolesPath,
 	}
 
 	// Handle sudo password using --become-password-file instead of environment variables
@@ -256,6 +260,7 @@ func (d *DriftDetector) runAnsibleCheck(playbookPath, inventoryPath, targetHosts
 	}
 
 	cmd.Env = append(os.Environ(), envVars...)
+	cmd.Dir = repoRoot // Run from repository root directory
 
 	// Add SSH key to Ansible command if available
 	if sshKeyPath != "" {
@@ -341,10 +346,14 @@ func (d *DriftDetector) remediateDrift(playbookPath, inventoryPath, targetHosts 
 		}
 	}
 
-	// Set environment variables to eliminate warnings
+	// Set environment variables to eliminate warnings and fix role path
+	repoRoot := filepath.Dir(filepath.Dir(playbookPath)) // Go up from playbooks/webservers to repo root
+	rolesPath := filepath.Join(repoRoot, "roles")
+
 	envVars := []string{
 		"ANSIBLE_PYTHON_INTERPRETER=" + d.getPythonInterpreter(),
 		"ANSIBLE_HOST_KEY_CHECKING=False",
+		"ANSIBLE_ROLES_PATH=" + rolesPath,
 	}
 
 	// Handle sudo password using --become-password-file instead of environment variables
@@ -374,6 +383,7 @@ func (d *DriftDetector) remediateDrift(playbookPath, inventoryPath, targetHosts 
 	}
 
 	cmd.Env = append(os.Environ(), envVars...)
+	cmd.Dir = repoRoot // Run from repository root directory
 
 	// Add SSH key to Ansible command if available
 	if sshKeyPath != "" {

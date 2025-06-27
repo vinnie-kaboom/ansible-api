@@ -5,6 +5,7 @@ import (
 	"os"
 	"regexp"
 	"strconv"
+	"strings"
 	"sync"
 	"time"
 
@@ -29,9 +30,9 @@ const (
 )
 
 // auditAPIRequest creates comprehensive audit logs for API requests
-func (s *Server) auditAPIRequest(c *gin.Context, req interface{}, eventType string, additionalFields map[string]interface{}) {
+func (s *Server) auditAPIRequest(c *gin.Context, eventType string, additionalFields map[string]any) {
 	// Base audit fields
-	auditFields := map[string]interface{}{
+	auditFields := map[string]any{
 		"audit_event":    eventType,
 		"client_ip":      c.ClientIP(),
 		"user_agent":     c.Request.UserAgent(),
@@ -88,7 +89,7 @@ func (s *Server) auditAPIRequest(c *gin.Context, req interface{}, eventType stri
 }
 
 // Config methods
-func (c *Config) SetIntValue(key string, value interface{}) {
+func (c *Config) SetIntValue(key string, value any) {
 	if str, ok := value.(string); ok {
 		if intVal, err := strconv.Atoi(str); err == nil {
 			switch key {
@@ -107,7 +108,7 @@ func (c *Config) SetIntValue(key string, value interface{}) {
 	}
 }
 
-func (c *Config) SetStringValue(key string, value interface{}) {
+func (c *Config) SetStringValue(key string, value any) {
 	if str, ok := value.(string); ok {
 		switch key {
 		case "private_key":
@@ -295,7 +296,7 @@ func (cm *ConfigManager) setStringFromEnv(config *Config, field, value string) {
 
 // setDefaults sets default values for configuration fields
 func (cm *ConfigManager) setDefaults(config *Config) {
-	defaults := map[string]interface{}{
+	defaults := map[string]any{
 		"port":            "8080",
 		"worker_count":    4,
 		"retention_hours": 24,
@@ -464,9 +465,94 @@ func NewRequestValidator() *RequestValidator {
 		return httpsGitRegex.MatchString(gitURL)
 	})
 
+	// Playbook path validation
+	v.RegisterValidation("playbook_path", func(fl validator.FieldLevel) bool {
+		path := fl.Field().String()
+		// Must end with .yml or .yaml and contain playbooks/
+		return regexp.MustCompile(`playbooks/.*\.(yml|yaml)$`).MatchString(path)
+	})
+
+	// Hostname or pattern validation
+	hostnameRegex := regexp.MustCompile(`^[a-zA-Z0-9]([a-zA-Z0-9\-\.]{0,61}[a-zA-Z0-9])?(\.[a-zA-Z]{2,})?$`)
+	v.RegisterValidation("hostname_or_pattern", func(fl validator.FieldLevel) bool {
+		target := fl.Field().String()
+		if target == "" {
+			return true // Optional field
+		}
+		// Allow hostnames, patterns like "web*", or groups like "webservers"
+		return hostnameRegex.MatchString(target) ||
+			regexp.MustCompile(`^[a-zA-Z0-9\-\*_]+$`).MatchString(target)
+	})
+
+	// Inventory validation
+	v.RegisterValidation("inventory", func(fl validator.FieldLevel) bool {
+		inventory := fl.Field().Interface().(map[string]map[string]string)
+		return validateInventoryStructure(inventory)
+	})
+
 	return &RequestValidator{
 		validator: v,
 	}
+}
+
+// validateInventoryStructure validates the inventory map structure and content
+func validateInventoryStructure(inventory map[string]map[string]string) bool {
+	if inventory == nil {
+		return true // nil inventory is valid (will use repository inventory)
+	}
+
+	// Check for empty inventory
+	if len(inventory) == 0 {
+		return false // empty inventory is not useful
+	}
+
+	// Validate each group and its hosts
+	for groupName, hosts := range inventory {
+		// Group name validation
+		if strings.TrimSpace(groupName) == "" {
+			return false // empty group name
+		}
+
+		// Group name should be alphanumeric with underscores/hyphens
+		if !regexp.MustCompile(`^[a-zA-Z][a-zA-Z0-9_\-]*$`).MatchString(groupName) {
+			return false
+		}
+
+		// Validate hosts in the group
+		if len(hosts) == 0 {
+			return false // empty group is not useful
+		}
+
+		for hostname, vars := range hosts {
+			// Hostname validation
+			if strings.TrimSpace(hostname) == "" {
+				return false // empty hostname
+			}
+
+			// Hostname should be valid
+			hostnameRegex := regexp.MustCompile(`^[a-zA-Z0-9]([a-zA-Z0-9\-\.]{0,61}[a-zA-Z0-9])?$`)
+			if !hostnameRegex.MatchString(hostname) {
+				return false
+			}
+
+			// Variables validation (should be in key=value format)
+			if vars != "" {
+				// Split by spaces and validate each key=value pair
+				varPairs := strings.Fields(vars)
+				for _, pair := range varPairs {
+					if !strings.Contains(pair, "=") {
+						return false // must be key=value format
+					}
+					parts := strings.SplitN(pair, "=", 2)
+					if len(parts) != 2 || strings.TrimSpace(parts[0]) == "" {
+						return false // invalid key=value format
+					}
+				}
+			}
+		}
+	}
+
+	return true
 }
 
 // ValidatePlaybookRequest validates a playbook execution request
@@ -553,7 +639,7 @@ func (s *Server) handlePlaybookRun(c *gin.Context) {
 	}()
 
 	// Audit: API request received
-	s.auditAPIRequest(c, nil, APIAuditRequestReceived, map[string]interface{}{
+	s.auditAPIRequest(c, APIAuditRequestReceived, map[string]any{
 		"request_id":    requestID,
 		"endpoint_type": "playbook_execution",
 	})
@@ -562,7 +648,7 @@ func (s *Server) handlePlaybookRun(c *gin.Context) {
 
 	if !s.RateLimiter.Allow() {
 		// Audit: Rate limit exceeded
-		s.auditAPIRequest(c, nil, APIAuditRateLimitExceeded, map[string]interface{}{
+		s.auditAPIRequest(c, APIAuditRateLimitExceeded, map[string]any{
 			"request_id":                     requestID,
 			"rate_limit_requests_per_second": s.Config.RateLimit,
 		})
@@ -575,7 +661,7 @@ func (s *Server) handlePlaybookRun(c *gin.Context) {
 	var req PlaybookRequest
 	if err := c.ShouldBindJSON(&req); err != nil {
 		// Audit: Invalid request
-		s.auditAPIRequest(c, &req, APIAuditRequestFailed, map[string]interface{}{
+		s.auditAPIRequest(c, APIAuditRequestFailed, map[string]any{
 			"request_id":     requestID,
 			"error":          err.Error(),
 			"failure_reason": "invalid_json_body",
@@ -591,7 +677,7 @@ func (s *Server) handlePlaybookRun(c *gin.Context) {
 	}
 
 	// Audit: Request parsed successfully
-	s.auditAPIRequest(c, &req, APIAuditRequestValidated, map[string]interface{}{
+	s.auditAPIRequest(c, APIAuditRequestValidated, map[string]any{
 		"request_id":       requestID,
 		"repository_url":   req.RepositoryURL,
 		"playbook_path":    req.PlaybookPath,
@@ -611,7 +697,7 @@ func (s *Server) handlePlaybookRun(c *gin.Context) {
 	validator := NewRequestValidator()
 	if err := validator.ValidatePlaybookRequest(&req); err != nil {
 		// Audit: Validation failed
-		s.auditAPIRequest(c, &req, APIAuditRequestFailed, map[string]interface{}{
+		s.auditAPIRequest(c, APIAuditRequestFailed, map[string]any{
 			"request_id":     requestID,
 			"error":          err.Error(),
 			"failure_reason": "request_validation_failed",
@@ -633,7 +719,7 @@ func (s *Server) handlePlaybookRun(c *gin.Context) {
 	s.queueJob(job)
 
 	// Audit: Job created successfully
-	s.auditAPIRequest(c, &req, APIAuditJobCreated, map[string]interface{}{
+	s.auditAPIRequest(c, APIAuditJobCreated, map[string]any{
 		"request_id":   requestID,
 		"job_id":       job.ID,
 		"job_status":   job.Status,
@@ -699,7 +785,7 @@ func (s *Server) handleJobs(c *gin.Context) {
 	}()
 
 	// Audit: Data access request
-	s.auditAPIRequest(c, nil, APIAuditDataAccess, map[string]interface{}{
+	s.auditAPIRequest(c, APIAuditDataAccess, map[string]any{
 		"request_id":    requestID,
 		"endpoint_type": "jobs_list",
 		"data_type":     "job_information",
@@ -713,7 +799,7 @@ func (s *Server) handleJobs(c *gin.Context) {
 	format := c.DefaultQuery("format", "summary")
 
 	// Audit: Data retrieved
-	s.auditAPIRequest(c, nil, APIAuditDataAccess, map[string]interface{}{
+	s.auditAPIRequest(c, APIAuditDataAccess, map[string]any{
 		"request_id":     requestID,
 		"data_retrieved": "jobs_list",
 		"job_count":      jobCount,

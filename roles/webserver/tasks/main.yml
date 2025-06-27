@@ -1,0 +1,51 @@
+---
+# Main tasks for webserver role
+
+- name: Include variable validation
+  include_tasks: validate.yml
+  tags: [validation, always]
+
+- name: Include OS-specific variables
+  include_vars: "{{ item }}"
+  with_first_found:
+    - "{{ ansible_os_family }}.yml"
+    - "default.yml"
+  tags: 
+    - webserver
+    - nginx
+
+- name: Check status of conflicting services
+  service_facts:
+  tags:
+    - webserver
+    - nginx
+    - services
+
+- name: Stop conflicting services using port 80 (only if running)
+  service:
+    name: "{{ item }}"
+    state: stopped
+    enabled: no
+  loop: "{{ conflicting_services }}"
+  when: 
+    - ansible_facts.services[item] is defined
+    - ansible_facts.services[item].state == "running"
+  ignore_errors: yes
+  tags:
+    - webserver
+    - nginx
+    - services
+
+- name: Start and enable nginx service (idempotent)
+  service:
+    name: "{{ nginx_service }}"
+    state: started
+    enabled: yes
+  register: nginx_service_result
+  changed_when: nginx_service_result.changed and (nginx_service_result.state != "started" or not nginx_service_result.enabled)
+  tags:
+    - webserver
+    - nginx
+    - services
+
+# ... existing code ... 

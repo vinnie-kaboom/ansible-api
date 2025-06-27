@@ -108,6 +108,13 @@ func (p *JobProcessor) processJob(job *Job) {
 
 	jobLogger.Info().Msg("Starting job processing")
 
+	// Validate job request
+	if err := p.validateJobRequest(job, jobLogger); err != nil {
+		jobLogger.Error().Err(err).Msg("Job validation failed")
+		p.updateJobStatus(job, "failed", "", "Job validation failed: "+err.Error())
+		return
+	}
+
 	p.server.JobMutex.Lock()
 	job.Status = "running"
 	p.server.JobMutex.Unlock()
@@ -331,7 +338,16 @@ func (p *JobProcessor) processJob(job *Job) {
 				Msg("Writing inventory group")
 			fmt.Fprintf(inventoryFile, "[%s]\n", group)
 			for host, vars := range hosts {
-				fmt.Fprintf(inventoryFile, "%s %s\n", host, vars)
+				// Format host variables properly as key=value pairs
+				hostLine := host
+				if vars != "" {
+					// Convert space-separated key=value pairs to proper format
+					varPairs := strings.Fields(vars)
+					if len(varPairs) > 0 {
+						hostLine += " " + strings.Join(varPairs, " ")
+					}
+				}
+				fmt.Fprintf(inventoryFile, "%s\n", hostLine)
 				totalHosts++
 			}
 			fmt.Fprintf(inventoryFile, "\n")
@@ -348,7 +364,9 @@ func (p *JobProcessor) processJob(job *Job) {
 	}
 
 	playbookPath := filepath.Join(tmpDir, job.PlaybookPath)
-	ansibleCmd := exec.Command("ansible-playbook", playbookPath, "-i", inventoryFilePath)
+	// Use relative path from repository root so roles are found correctly
+	relativePlaybookPath := job.PlaybookPath
+	ansibleCmd := exec.Command("ansible-playbook", relativePlaybookPath, "-i", inventoryFilePath)
 
 	// If target hosts is empty, determine appropriate targets from inventory
 	targetHosts := job.TargetHosts
@@ -404,10 +422,12 @@ func (p *JobProcessor) processJob(job *Job) {
 		}
 	}
 
-	// Set environment variables to eliminate warnings
+	// Set environment variables to eliminate warnings and configure roles path
+	rolesPath := filepath.Join(tmpDir, "roles")
 	envVars := []string{
 		"ANSIBLE_PYTHON_INTERPRETER=" + p.getPythonInterpreter(),
 		"ANSIBLE_HOST_KEY_CHECKING=False",
+		"ANSIBLE_ROLES_PATH=" + rolesPath,
 	}
 
 	// Configure authentication based on target OS and connection type
@@ -998,4 +1018,45 @@ func detectPythonInterpreter() string {
 
 	// If nothing else works, fallback to python3
 	return "python3"
+}
+
+// validateJobRequest performs enhanced validation on job requests
+func (p *JobProcessor) validateJobRequest(job *Job, logger zerolog.Logger) error {
+	// Validate playbook path
+	if !strings.Contains(job.PlaybookPath, "playbooks/") {
+		return fmt.Errorf("playbook_path must contain 'playbooks/' directory")
+	}
+
+	if !strings.HasSuffix(job.PlaybookPath, ".yml") && !strings.HasSuffix(job.PlaybookPath, ".yaml") {
+		return fmt.Errorf("playbook_path must end with .yml or .yaml")
+	}
+
+	// Validate target hosts format
+	if job.TargetHosts != "" {
+		if len(job.TargetHosts) > 255 {
+			return fmt.Errorf("target_hosts exceeds maximum length of 255 characters")
+		}
+	}
+
+	// Validate inventory size
+	if job.Inventory != nil {
+		totalHosts := 0
+		for group, hosts := range job.Inventory {
+			if len(group) == 0 {
+				return fmt.Errorf("inventory group name cannot be empty")
+			}
+			totalHosts += len(hosts)
+		}
+		if totalHosts > 1000 {
+			return fmt.Errorf("inventory contains too many hosts (max: 1000, found: %d)", totalHosts)
+		}
+	}
+
+	logger.Debug().
+		Str("playbook_path", job.PlaybookPath).
+		Str("target_hosts", job.TargetHosts).
+		Int("inventory_groups", len(job.Inventory)).
+		Msg("Enhanced job validation passed")
+
+	return nil
 }

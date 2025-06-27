@@ -1,0 +1,313 @@
+---
+# Main tasks for webserver role
+
+- name: Include OS-specific variables
+  include_vars: "{{ item }}"
+  with_first_found:
+    - "{{ ansible_os_family }}.yml"
+    - "default.yml"
+  tags:
+    - webserver
+    - nginx
+
+- name: Update package cache (RedHat/CentOS)
+  yum:
+    update_cache: yes
+  when: ansible_os_family == "RedHat"
+  changed_when: false
+  tags:
+    - webserver
+    - packages
+
+- name: Install nginx package
+  package:
+    name: "{{ nginx_package }}"
+    state: present
+  register: nginx_install
+  tags:
+    - webserver
+    - nginx
+    - packages
+
+- name: Check if port 80 is already in use
+  shell: netstat -tlnp | grep :80 || echo "Port 80 is available"
+  register: port_check
+  changed_when: false
+  tags:
+    - webserver
+    - nginx
+    - ports
+
+- name: Display port 80 status
+  debug:
+    var: port_check.stdout_lines
+  tags:
+    - webserver
+    - nginx
+    - debug
+
+# FIXED: Check service status first to make stopping idempotent
+- name: Check status of conflicting services
+  service_facts:
+  tags:
+    - webserver
+    - nginx
+    - services
+
+- name: Stop conflicting services using port 80 (only if running)
+  service:
+    name: "{{ item }}"
+    state: stopped
+    enabled: no
+  loop: "{{ conflicting_services }}"
+  when: 
+    - ansible_facts.services[item + '.service'] is defined
+    - ansible_facts.services[item + '.service'].state == "running"
+  ignore_errors: yes
+  tags:
+    - webserver
+    - nginx
+    - services
+
+- name: Check if nginx.conf backup exists
+  stat:
+    path: "{{ nginx_conf_backup_file }}"
+  register: nginx_backup_exists
+  tags:
+    - webserver
+    - nginx
+    - config
+
+- name: Backup original nginx.conf
+  copy:
+    src: "{{ nginx_conf_file }}"
+    dest: "{{ nginx_conf_backup_file }}"
+    remote_src: yes
+    backup: no
+  when: not nginx_backup_exists.stat.exists and nginx_config_backup
+  ignore_errors: yes
+  tags:
+    - webserver
+    - nginx
+    - config
+    - backup
+
+- name: Ensure nginx directories exist with correct ownership
+  file:
+    path: "{{ item.path }}"
+    state: directory
+    mode: '0755'
+    owner: "{{ item.owner }}"
+    group: "{{ item.group }}"
+  loop:
+    - { path: "{{ nginx_vhost_dir }}", owner: "root", group: "root" }
+    - { path: "{{ nginx_log_dir }}", owner: "{{ nginx_user }}", group: "{{ nginx_group }}" }
+    - { path: "{{ nginx_cache_dir }}", owner: "{{ nginx_user }}", group: "{{ nginx_group }}" }
+  tags:
+    - webserver
+    - nginx
+    - directories
+
+- name: Remove default nginx config that might conflict
+  file:
+    path: "{{ nginx_default_vhost_file }}"
+    state: absent
+  ignore_errors: yes
+  tags:
+    - webserver
+    - nginx
+    - config
+
+- name: Create minimal main nginx.conf
+  template:
+    src: nginx.conf.j2
+    dest: "{{ nginx_conf_file }}"
+    mode: '0644'
+    owner: root
+    group: root
+    backup: yes
+  register: nginx_main_config
+  notify: reload nginx
+  tags:
+    - webserver
+    - nginx
+    - config
+
+- name: Test nginx configuration syntax
+  command: nginx -t
+  register: nginx_config_test
+  changed_when: false
+  ignore_errors: yes
+  tags:
+    - webserver
+    - nginx
+    - config
+    - test
+
+- name: Display nginx config test result
+  debug:
+    var: nginx_config_test
+  tags:
+    - webserver
+    - nginx
+    - debug
+
+- name: Create nginx user if it doesn't exist
+  user:
+    name: "{{ nginx_user }}"
+    system: yes
+    shell: /sbin/nologin
+    home: "{{ nginx_cache_dir }}"
+    create_home: no
+  ignore_errors: yes
+  tags:
+    - webserver
+    - nginx
+    - users
+
+- name: Set SELinux boolean for nginx
+  seboolean:
+    name: httpd_can_network_connect
+    state: "{{ selinux_nginx_connect | ternary('yes', 'no') }}"
+    persistent: yes
+  when:
+    - ansible_selinux is defined
+    - ansible_selinux.status == "enabled"
+  ignore_errors: yes
+  tags:
+    - webserver
+    - nginx
+    - selinux
+
+- name: Create custom nginx vhost configuration
+  template:
+    src: vhost.conf.j2
+    dest: "{{ nginx_vhost_dir }}/custom.conf"
+    mode: '0644'
+    owner: root
+    group: root
+    backup: yes
+  register: nginx_vhost_config
+  notify: reload nginx
+  tags:
+    - webserver
+    - nginx
+    - config
+    - vhost
+
+- name: Test nginx configuration after vhost config
+  command: nginx -t
+  register: nginx_final_test
+  changed_when: false
+  tags:
+    - webserver
+    - nginx
+    - config
+    - test
+
+- name: Display final nginx config test
+  debug:
+    var: nginx_final_test
+  tags:
+    - webserver
+    - nginx
+    - debug
+
+# FIXED: Check nginx status first and make service start truly idempotent
+- name: Check nginx service status before starting
+  service_facts:
+  tags:
+    - webserver
+    - nginx
+    - services
+
+- name: Start and enable nginx service (truly idempotent)
+  service:
+    name: "{{ nginx_service }}"
+    state: started
+    enabled: yes
+  register: nginx_service_result
+  changed_when: >
+    nginx_service_result.changed and (
+      ansible_facts.services[nginx_service + '.service'].state != "running" or
+      not ansible_facts.services[nginx_service + '.service'].enabled
+    )
+  tags:
+    - webserver
+    - nginx
+    - services
+
+- name: Create web root directory
+  file:
+    path: "{{ nginx_document_root }}"
+    state: directory
+    mode: '0755'
+    owner: "{{ web_content_owner }}"
+    group: "{{ web_content_group }}"
+  tags:
+    - webserver
+    - nginx
+    - content
+
+- name: Check if custom index.html already exists
+  stat:
+    path: "{{ nginx_document_root }}/index.html"
+  register: index_html_exists
+  tags:
+    - webserver
+    - nginx
+    - content
+
+- name: Create default index.html
+  template:
+    src: index.html.j2
+    dest: "{{ nginx_document_root }}/index.html"
+    mode: '0644'
+    owner: "{{ web_content_owner }}"
+    group: "{{ web_content_group }}"
+    backup: yes
+    force: no
+  when: not index_html_exists.stat.exists
+  tags:
+    - webserver
+    - nginx
+    - content
+
+- name: Configure firewall for nginx
+  ansible.posix.firewalld:
+    service: "{{ item }}"
+    permanent: yes
+    state: enabled
+    immediate: yes
+  loop: "{{ firewall_services }}"
+  when: ansible_os_family == "RedHat"
+  ignore_errors: yes
+  tags:
+    - webserver
+    - nginx
+    - firewall
+
+- name: Verify nginx is running
+  uri:
+    url: "http://{{ ansible_default_ipv4.address }}"
+    method: GET
+    timeout: 10
+    status_code: [200, 403]
+  register: nginx_test
+  ignore_errors: yes
+  changed_when: false
+  tags:
+    - webserver
+    - nginx
+    - test
+
+- name: Display nginx status
+  debug:
+    msg:
+      - "Nginx installation completed"
+      - "Service status: {{ nginx_service_result.state | default('unknown') }}"
+      - "HTTP test: {{ 'SUCCESS' if nginx_test.status is defined and nginx_test.status == 200 else 'FAILED' }}"
+  tags:
+    - webserver
+    - nginx
+    - debug 

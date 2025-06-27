@@ -43,11 +43,11 @@ type Server struct {
 // PlaybookRequest represents a request to run an Ansible playbook.
 type PlaybookRequest struct {
 	RepositoryURL string                       `json:"repository_url" validate:"required,httpsgit"`
-	PlaybookPath  string                       `json:"playbook_path" validate:"required"`
-	Inventory     map[string]map[string]string `json:"inventory"`
+	PlaybookPath  string                       `json:"playbook_path" validate:"required,playbook_path"`
+	Inventory     map[string]map[string]string `json:"inventory" validate:"omitempty,inventory"`
 	Environment   map[string]string            `json:"environment"`
 	Secrets       map[string]string            `json:"secrets"`
-	TargetHosts   string                       `json:"target_hosts"`
+	TargetHosts   string                       `json:"target_hosts" validate:"omitempty,hostname_or_pattern"`
 }
 
 // Job represents a playbook execution job.
