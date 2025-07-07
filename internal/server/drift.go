@@ -196,13 +196,39 @@ func (d *DriftDetector) runAnsibleCheck(playbookPath, inventoryPath, targetHosts
 		cmd.Args = append(cmd.Args, "--limit", targetHosts)
 	}
 
+	// Set working directory to the cloned repository root
+	repoRoot := filepath.Dir(filepath.Dir(filepath.Dir(playbookPath))) // Go up from playbooks/webservers/deploy.yml to repo root
+	cmd.Dir = repoRoot
+
+	// Set environment variables for authentication (same as processor.go)
+	rolesPath := filepath.Join(repoRoot, "roles") + ":" + filepath.Join(repoRoot, "playbooks", "roles") + ":~/.ansible/roles:/usr/share/ansible/roles:/etc/ansible/roles"
+	cmd.Env = append(os.Environ(),
+		"ANSIBLE_HOST_KEY_CHECKING=False",
+		"ANSIBLE_ROLES_PATH="+rolesPath,
+	)
+
+	// Pass SSH credentials from Vault via environment variables (same as processor.go)
+	if d.server != nil && d.server.VaultClient != nil {
+		if credentials, err := d.server.VaultClient.GetSecret("ansible/credentials"); err == nil {
+			if username, ok := credentials["username"]; ok {
+				cmd.Env = append(cmd.Env, "ANSIBLE_SSH_USER="+username.(string))
+			}
+			if password, ok := credentials["password"]; ok {
+				cmd.Env = append(cmd.Env, "ANSIBLE_SSH_PASSWORD="+password.(string))
+			}
+			if sudoPassword, ok := credentials["sudo_password"]; ok {
+				cmd.Env = append(cmd.Env, "ANSIBLE_BECOME_PASSWORD="+sudoPassword.(string))
+			}
+		}
+	}
+
 	outputBytes, err := cmd.CombinedOutput()
 	output := string(outputBytes)
 
 	d.logAnsibleSummary(playbookPath, output)
 
 	if err != nil {
-		d.logger.Error().Str("playbook", playbookPath).Err(err).Msg("Ansible check mode failed")
+		d.logger.Error().Str("playbook", playbookPath).Str("ansible_output", output).Err(err).Msg("Ansible check mode failed")
 		return false, "error", ""
 	}
 
@@ -218,7 +244,8 @@ func (d *DriftDetector) runAnsibleCheck(playbookPath, inventoryPath, targetHosts
 			return false, "ok", ""
 		}
 
-		d.logger.Warn().Str("playbook", playbookPath).Msg("Drift detected - running remediation")
+		// Log the specific changes that triggered drift detection for debugging
+		d.logger.Warn().Str("playbook", playbookPath).Str("ansible_output", output).Msg("Drift detected - running remediation")
 		remediationStatus, remediationTime := d.remediateDrift(playbookPath, inventoryPath, targetHosts)
 		return true, remediationStatus, remediationTime
 	}
@@ -232,6 +259,32 @@ func (d *DriftDetector) remediateDrift(playbookPath, inventoryPath, targetHosts 
 	cmd := exec.Command("ansible-playbook", playbookPath, "--inventory", inventoryPath)
 	if targetHosts != "" {
 		cmd.Args = append(cmd.Args, "--limit", targetHosts)
+	}
+
+	// Set working directory to the cloned repository root
+	repoRoot := filepath.Dir(filepath.Dir(filepath.Dir(playbookPath))) // Go up from playbooks/webservers/deploy.yml to repo root
+	cmd.Dir = repoRoot
+
+	// Set environment variables for authentication (same as processor.go)
+	rolesPath := filepath.Join(repoRoot, "roles") + ":" + filepath.Join(repoRoot, "playbooks", "roles") + ":~/.ansible/roles:/usr/share/ansible/roles:/etc/ansible/roles"
+	cmd.Env = append(os.Environ(),
+		"ANSIBLE_HOST_KEY_CHECKING=False",
+		"ANSIBLE_ROLES_PATH="+rolesPath,
+	)
+
+	// Pass SSH credentials from Vault via environment variables (same as processor.go)
+	if d.server != nil && d.server.VaultClient != nil {
+		if credentials, err := d.server.VaultClient.GetSecret("ansible/credentials"); err == nil {
+			if username, ok := credentials["username"]; ok {
+				cmd.Env = append(cmd.Env, "ANSIBLE_SSH_USER="+username.(string))
+			}
+			if password, ok := credentials["password"]; ok {
+				cmd.Env = append(cmd.Env, "ANSIBLE_SSH_PASSWORD="+password.(string))
+			}
+			if sudoPassword, ok := credentials["sudo_password"]; ok {
+				cmd.Env = append(cmd.Env, "ANSIBLE_BECOME_PASSWORD="+sudoPassword.(string))
+			}
+		}
 	}
 
 	_, err := cmd.CombinedOutput()
@@ -392,9 +445,18 @@ func (d *DriftDetector) areChangesIgnorable(output string) bool {
 		"ansible date and time", "date and time",
 		"iso8601", "utc", "gmt", "timezone",
 		"state", "touch", "file",
+		// Add common verification/check tasks that are non-idempotent
+		"verify", "health_check", "check", "test", "ping", "curl", "wget",
+		"uri", "get_url", "stat", "find", "command", "shell",
+		// Add Ansible facts that commonly change
+		"ansible_facts", "gather_facts", "setup",
+		// Add common task names that are verification-only
+		"accessible", "deployment results", "display", "debug",
 	}
 
 	lines := strings.Split(output, "\n")
+	hasNonIgnorableChanges := false
+
 	for _, line := range lines {
 		line = strings.TrimSpace(line)
 		lineLower := strings.ToLower(line)
@@ -411,7 +473,17 @@ func (d *DriftDetector) areChangesIgnorable(output string) bool {
 			continue
 		}
 
-		// Check if change is ignorable
+		// Check for specific task names that are inherently non-idempotent
+		if strings.Contains(lineLower, "task [") {
+			for _, pattern := range ignorablePatterns {
+				if strings.Contains(lineLower, pattern) {
+					// This entire task is ignorable, skip ahead
+					goto nextLine
+				}
+			}
+		}
+
+		// Check if change is ignorable (diff lines)
 		if strings.Contains(line, "-") || strings.Contains(line, "+") {
 			isIgnorable := false
 			for _, pattern := range ignorablePatterns {
@@ -422,12 +494,14 @@ func (d *DriftDetector) areChangesIgnorable(output string) bool {
 			}
 
 			if !isIgnorable {
-				return false
+				hasNonIgnorableChanges = true
 			}
 		}
+
+	nextLine:
 	}
 
-	return true
+	return !hasNonIgnorableChanges
 }
 
 // UpdatePlaybookState updates the state for a specific playbook

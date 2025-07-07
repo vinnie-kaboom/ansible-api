@@ -1,6 +1,7 @@
 package server
 
 import (
+	"ansible-api/internal/ansible"
 	"ansible-api/internal/vault"
 	"sync"
 	"time"
@@ -35,6 +36,7 @@ type Server struct {
 	GithubPrivateKey     string
 	GithubAPIBaseURL     string
 	VaultClient          *vault.VaultClient
+	AnsibleClient        *ansible.Client
 	JobProcessor         *JobProcessor
 	Config               *Config
 }

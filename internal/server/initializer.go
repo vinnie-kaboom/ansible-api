@@ -8,6 +8,7 @@ import (
 	"sync"
 	"time"
 
+	"ansible-api/internal/ansible"
 	"ansible-api/internal/vault"
 
 	"github.com/gin-gonic/gin"
@@ -349,6 +350,19 @@ func (sb *ServerBuilder) buildServer(config *Config, vaultClient *vault.VaultCli
 	// Initialize Gin router
 	router := sb.initializeRouter()
 
+	// Create AnsibleClient with SSH key from Vault
+	var ansibleClient *ansible.Client
+	if vaultClient != nil {
+		var err error
+		ansibleClient, err = ansible.NewClient(vaultClient)
+		if err != nil {
+			// Log warning but don't fail server startup - SSH key is optional
+			log.Warn().Err(err).Msg("Failed to create Ansible client with SSH key from Vault")
+		} else {
+			log.Info().Str("ssh_key_path", ansibleClient.SSHKeyPath).Msg("Ansible client created with SSH key from Vault")
+		}
+	}
+
 	// Create server instance
 	server := &Server{
 		Router:               router,
@@ -362,6 +376,7 @@ func (sb *ServerBuilder) buildServer(config *Config, vaultClient *vault.VaultCli
 		GithubPrivateKey:     config.PrivateKey,
 		GithubAPIBaseURL:     config.APIBaseURL,
 		VaultClient:          vaultClient,
+		AnsibleClient:        ansibleClient,
 		Config:               config,
 	}
 
@@ -421,6 +436,7 @@ func (s *Server) registerRoutes() {
 
 	r.GET("/api/health", s.handleHealth)
 	r.POST("/api/playbook/run", s.handlePlaybookRun)
+	r.POST("/api/execute", s.handlePlaybookRun) // Backward compatibility alias
 	r.GET("/api/jobs", s.handleJobs)
 	r.GET("/api/jobs/:job_id", s.handleJobStatus)
 	r.POST("/api/jobs/:job_id/retry", s.handleJobRetry)

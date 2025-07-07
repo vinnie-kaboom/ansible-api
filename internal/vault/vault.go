@@ -83,7 +83,7 @@ func NewClient() (*VaultClient, error) {
 }
 
 func (c *VaultClient) GetSecret(path string) (map[string]interface{}, error) {
-	fullPath := fmt.Sprintf("secret/data/%s", path)
+	fullPath := fmt.Sprintf("kv/data/%s", path)
 
 	logger.Debug().
 		Str("path", path).
@@ -127,7 +127,7 @@ func (c *VaultClient) GetSecret(path string) (map[string]interface{}, error) {
 }
 
 func (c *VaultClient) PutSecret(path string, data map[string]interface{}) error {
-	_, err := c.client.Logical().Write(fmt.Sprintf("secret/data/%s", path), map[string]interface{}{
+	_, err := c.client.Logical().Write(fmt.Sprintf("kv/data/%s", path), map[string]interface{}{
 		"data": data,
 	})
 	if err != nil {
@@ -139,7 +139,7 @@ func (c *VaultClient) PutSecret(path string, data map[string]interface{}) error 
 }
 
 func (c *VaultClient) DeleteSecret(path string) error {
-	_, err := c.client.Logical().Delete(fmt.Sprintf("secret/data/%s", path))
+	_, err := c.client.Logical().Delete(fmt.Sprintf("kv/data/%s", path))
 	if err != nil {
 		logger.Error().Msg("Failed to delete secret")
 		return fmt.Errorf("failed to delete secret: %w", err)
@@ -149,7 +149,7 @@ func (c *VaultClient) DeleteSecret(path string) error {
 }
 
 func (c *VaultClient) ListSecrets(path string) ([]string, error) {
-	secret, err := c.client.Logical().List(fmt.Sprintf("secret/metadata/%s", path))
+	secret, err := c.client.Logical().List(fmt.Sprintf("kv/metadata/%s", path))
 	if err != nil {
 		logger.Error().Msg("Failed to list secrets")
 		return nil, fmt.Errorf("failed to list secrets: %w", err)
@@ -175,7 +175,7 @@ func (c *VaultClient) ListSecrets(path string) ([]string, error) {
 
 // GetSSHKey retrieves the SSH private key from Vault
 func (c *VaultClient) GetSSHKey() (string, error) {
-	secret, err := c.client.Logical().Read("secret/data/ansible/ssh-key")
+	secret, err := c.client.Logical().Read("kv/data/ansible/ssh-key")
 	if err != nil {
 		logger.Error().Msg("Failed to read SSH key")
 		return "", fmt.Errorf("failed to read SSH key from Vault: %w", err)
