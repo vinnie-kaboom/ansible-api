@@ -22,6 +22,9 @@ type Config struct {
 	RetentionHours int    `json:"retention_hours"`
 	TempPatterns   string `json:"temp_patterns"`
 	RateLimit      int    `json:"rate_limit"`
+	// Drift detection settings
+	DriftCheckOnlyOnRepoChange bool `json:"drift_check_only_on_repo_change"`
+	DriftIgnoreDynamicContent  bool `json:"drift_ignore_dynamic_content"`
 }
 
 type Server struct {

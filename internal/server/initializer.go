@@ -243,6 +243,10 @@ func (cm *ConfigManager) setDefaults(config *Config) {
 			cm.setStringDefault(config, key, v)
 		}
 	}
+
+	// Drift detection defaults - enable optimizations by default
+	config.DriftCheckOnlyOnRepoChange = true // Performance optimization
+	config.DriftIgnoreDynamicContent = true  // Reduce false positives
 }
 
 // setIntDefault sets an integer default value if not already set
