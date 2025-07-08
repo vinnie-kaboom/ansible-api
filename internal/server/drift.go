@@ -2,6 +2,7 @@ package server
 
 import (
 	"ansible-api/internal/githubapp"
+	"context"
 	"crypto/sha256"
 	"encoding/hex"
 	"encoding/json"
@@ -115,6 +116,7 @@ func (d *DriftDetector) checkPlaybookDrift(logicalPath string, playbookState *Pl
 					PlaybookCommit:        currentCommitHash,
 					TargetHosts:           playbookState.TargetHosts,
 				}
+				d.logger.Info().Str("playbook", logicalPath).Msg("Drift check completed - skipped (no repo changes)")
 				return true
 			} else {
 				d.logger.Debug().
@@ -142,6 +144,12 @@ func (d *DriftDetector) checkPlaybookDrift(logicalPath string, playbookState *Pl
 		PlaybookCommit:        currentCommitHash,
 		TargetHosts:           playbookState.TargetHosts,
 	}
+
+	d.logger.Info().
+		Str("playbook", logicalPath).
+		Bool("drift_detected", driftDetected).
+		Str("status", remediationStatus).
+		Msg("Drift check completed")
 
 	return true
 }
@@ -334,8 +342,11 @@ func (d *DriftDetector) getGitHubToken() (string, error) {
 
 // getRemoteCommitHash gets the current commit hash from a remote repository
 func (d *DriftDetector) getRemoteCommitHash(repoURL, branch string) (string, error) {
+	d.logger.Debug().Str("repo", repoURL).Str("branch", branch).Msg("Getting remote commit hash")
+
 	token, err := d.getGitHubToken()
 	if err != nil {
+		d.logger.Error().Err(err).Str("repo", repoURL).Msg("Failed to get GitHub token for remote commit check")
 		return "", fmt.Errorf("failed to authenticate with GitHub: %w", err)
 	}
 
@@ -343,23 +354,38 @@ func (d *DriftDetector) getRemoteCommitHash(repoURL, branch string) (string, err
 	host := d.extractHost(repoURL)
 	cloneURL := githubapp.BuildCloneURL(token, repoPath, host)
 
-	cmd := exec.Command("git", "ls-remote", "--heads", cloneURL, branch)
+	d.logger.Debug().Str("repo", repoURL).Str("clone_url", maskTokenInURL(cloneURL)).Msg("Executing git ls-remote")
+
+	// Create command with timeout context
+	ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
+	defer cancel()
+
+	cmd := exec.CommandContext(ctx, "git", "ls-remote", "--heads", cloneURL, branch)
 	output, err := cmd.Output()
 	if err != nil {
+		if ctx.Err() == context.DeadlineExceeded {
+			d.logger.Error().Str("repo", repoURL).Msg("Git ls-remote timed out after 30 seconds")
+			return "", fmt.Errorf("git ls-remote timed out: %w", err)
+		}
+		d.logger.Error().Err(err).Str("repo", repoURL).Msg("Git ls-remote failed")
 		return "", fmt.Errorf("git ls-remote failed: %w", err)
 	}
 
 	lines := strings.Split(strings.TrimSpace(string(output)), "\n")
 	if len(lines) == 0 {
+		d.logger.Error().Str("repo", repoURL).Msg("No output from git ls-remote")
 		return "", fmt.Errorf("no output from git ls-remote")
 	}
 
 	parts := strings.Fields(lines[0])
 	if len(parts) < 2 {
+		d.logger.Error().Str("repo", repoURL).Str("output", string(output)).Msg("Unexpected git ls-remote output format")
 		return "", fmt.Errorf("unexpected output format from git ls-remote")
 	}
 
-	return parts[0], nil
+	commitHash := parts[0]
+	d.logger.Debug().Str("repo", repoURL).Str("commit", commitHash).Msg("Successfully retrieved remote commit hash")
+	return commitHash, nil
 }
 
 // extractRepoPath extracts the repository path from a URL
