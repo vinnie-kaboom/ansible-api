@@ -25,6 +25,7 @@ type Config struct {
 	// Drift detection settings
 	DriftCheckOnlyOnRepoChange bool `json:"drift_check_only_on_repo_change"`
 	DriftIgnoreDynamicContent  bool `json:"drift_ignore_dynamic_content"`
+	DriftPeriodicCheckInterval int  `json:"drift_periodic_check_interval"` // Minutes between periodic checks
 }
 
 type Server struct {
@@ -81,6 +82,7 @@ type PlaybookState struct {
 	LastTargets           []string `json:"last_targets"`
 	PlaybookCommit        string   `json:"playbook_commit"`
 	TargetHosts           string   `json:"target_hosts"`
+	LastFullCheck         string   `json:"last_full_check"` // Track last full infrastructure check
 }
 
 // StateFile represents the state of all playbooks

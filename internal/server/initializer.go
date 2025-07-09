@@ -247,6 +247,7 @@ func (cm *ConfigManager) setDefaults(config *Config) {
 	// Drift detection defaults - enable optimizations by default
 	config.DriftCheckOnlyOnRepoChange = true // Performance optimization
 	config.DriftIgnoreDynamicContent = true  // Reduce false positives
+	config.DriftPeriodicCheckInterval = 5    // Periodic infrastructure check every 5 minutes
 }
 
 // setIntDefault sets an integer default value if not already set

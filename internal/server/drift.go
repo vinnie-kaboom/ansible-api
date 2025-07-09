@@ -88,7 +88,10 @@ func (d *DriftDetector) checkPlaybookDrift(logicalPath string, playbookState *Pl
 	// Check if repository has changed
 	repoChanged := playbookState.PlaybookCommit != currentCommitHash
 
-	// Log commit hash changes
+	// Always run infrastructure checks - simpler and more reliable
+	shouldRunCheck := true
+
+	// Log the decision
 	if playbookState.PlaybookCommit != "" {
 		if repoChanged {
 			d.logger.Info().
@@ -97,38 +100,26 @@ func (d *DriftDetector) checkPlaybookDrift(logicalPath string, playbookState *Pl
 				Str("new_commit", currentCommitHash).
 				Msg("Repository changed - running drift check")
 		} else {
-			// Check if we should skip drift checks when repo hasn't changed
-			if d.server.Config.DriftCheckOnlyOnRepoChange {
-				d.logger.Debug().
-					Str("playbook", logicalPath).
-					Str("commit", currentCommitHash).
-					Msg("Repository unchanged - skipping drift check for performance")
-				// Repository hasn't changed, assume no drift
-				*playbookState = PlaybookState{
-					Repo:                  playbookState.Repo,
-					LastRun:               time.Now().UTC().Format(time.RFC3339),
-					LastHash:              playbookState.LastHash,
-					LastStatus:            "ok",
-					LastRemediation:       playbookState.LastRemediation,
-					LastRemediationStatus: "ok",
-					DriftDetected:         false,
-					LastTargets:           playbookState.LastTargets,
-					PlaybookCommit:        currentCommitHash,
-					TargetHosts:           playbookState.TargetHosts,
-				}
-				d.logger.Info().Str("playbook", logicalPath).Msg("Drift check completed - skipped (no repo changes)")
-				return true
-			} else {
-				d.logger.Debug().
-					Str("playbook", logicalPath).
-					Str("commit", currentCommitHash).
-					Msg("Repository unchanged - still running drift check (full mode)")
-			}
+			d.logger.Info().
+				Str("playbook", logicalPath).
+				Str("last_full_check", playbookState.LastFullCheck).
+				Int("interval_minutes", d.server.Config.DriftPeriodicCheckInterval).
+				Msg("Running periodic infrastructure check")
 		}
 	}
 
-	// Run drift check only if repository changed or it's the first run
-	driftDetected, remediationStatus, remediationTime := d.runDriftCheck(logicalPath, playbookState)
+	// Run drift check if needed
+	var driftDetected bool
+	var remediationStatus string
+	var remediationTime string
+
+	if shouldRunCheck {
+		driftDetected, remediationStatus, remediationTime = d.runDriftCheck(logicalPath, playbookState)
+	} else {
+		driftDetected = false
+		remediationStatus = "ok"
+		remediationTime = ""
+	}
 
 	// Update playbook state
 	hash, _ := d.fileHash(filepath.Join(os.TempDir(), logicalPath))
@@ -143,12 +134,14 @@ func (d *DriftDetector) checkPlaybookDrift(logicalPath string, playbookState *Pl
 		LastTargets:           []string{},
 		PlaybookCommit:        currentCommitHash,
 		TargetHosts:           playbookState.TargetHosts,
+		LastFullCheck:         time.Now().UTC().Format(time.RFC3339), // Update last full check time
 	}
 
 	d.logger.Info().
 		Str("playbook", logicalPath).
 		Bool("drift_detected", driftDetected).
 		Str("status", remediationStatus).
+		Bool("repo_changed", repoChanged).
 		Msg("Drift check completed")
 
 	return true
@@ -502,6 +495,10 @@ func (d *DriftDetector) areChangesIgnorable(output string) bool {
 		"ansible_facts", "gather_facts", "setup",
 		"accessible", "deployment results", "display", "debug",
 		"create custom index page", "index page", "index.html",
+		// Ansible temporary paths and command arguments
+		"/tmp/repo-drift-", "included:", "command arguments",
+		"-t", "nginx -t", "test", "validation",
+		"item=", "ansible-local-", "tmpkd4k35jk", "tmpro_kr2vk",
 	}
 
 	// Comprehensive regex patterns for timestamp and dynamic content changes
@@ -514,12 +511,42 @@ func (d *DriftDetector) areChangesIgnorable(output string) bool {
 		regexp.MustCompile(`^\s*[+-].*\b\d{10,13}\b`),
 		// Common timestamp keywords with dates
 		regexp.MustCompile(`^\s*[+-].*(?:deployed|created|modified|updated|generated):\s*\d{4}-\d{2}-\d{2}`),
+		// Specific "Deployed:" timestamp pattern from templates
+		regexp.MustCompile(`^\s*[+-].*Deployed:\s*\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2}Z`),
 		// ansible_date_time variables
 		regexp.MustCompile(`^\s*[+-].*ansible_date_time\.(iso8601|epoch|date|time)`),
+		// Additional timestamp patterns that could appear in templates
+		regexp.MustCompile(`^\s*[+-].*(?:timestamp|time|date|created_at|updated_at|last_modified):\s*\d{4}-\d{2}-\d{2}`),
+		// RFC 3339 timestamps with timezone offsets
+		regexp.MustCompile(`^\s*[+-].*\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2}(?:\.\d{3})?[+-]\d{2}:\d{2}`),
+		// Human-readable date formats
+		regexp.MustCompile(`^\s*[+-].*(?:Jan|Feb|Mar|Apr|May|Jun|Jul|Aug|Sep|Oct|Nov|Dec)\s+\d{1,2},\s+\d{4}`),
+		// ISO date only (without time) - simplified without lookahead
+		regexp.MustCompile(`^\s*[+-].*\d{4}-\d{2}-\d{2}\s*$`),
+		// Time-only patterns (HH:MM:SS)
+		regexp.MustCompile(`^\s*[+-].*\d{2}:\d{2}:\d{2}(?:\.\d{3})?`),
+		// Epoch timestamps (10 or 13 digits)
+		regexp.MustCompile(`^\s*[+-].*\b\d{10,13}\b`),
+		// Template variables that might contain timestamps
+		regexp.MustCompile(`^\s*[+-].*\{\{.*(?:date|time|timestamp).*\}\}`),
 		// HTML class attributes with timestamps
 		regexp.MustCompile(`^\s*[+-].*class=".*timestamp.*".*\d{4}-\d{2}-\d{2}`),
 		// Generic dynamic IDs or session tokens
 		regexp.MustCompile(`^\s*[+-].*(?:id|token|session|uuid).*[a-f0-9]{8,32}`),
+		// Common dynamic content patterns
+		regexp.MustCompile(`^\s*[+-].*(?:version|build|commit|hash|checksum).*[a-f0-9]{6,40}`),
+		// Random strings and hashes
+		regexp.MustCompile(`^\s*[+-].*[a-f0-9]{16,64}`),
+		// Process IDs and temporary file paths
+		regexp.MustCompile(`^\s*[+-].*(?:pid|process).*\d{1,6}`),
+		// Ansible temporary paths and directories
+		regexp.MustCompile(`^\s*[+-].*/tmp/repo-drift-\d+/`),
+		regexp.MustCompile(`^\s*[+-].*ansible-local-\d+[a-z0-9_]+/`),
+		regexp.MustCompile(`^\s*[+-].*tmp[a-z0-9_]+/`),
+		// Ansible command arguments and included tasks
+		regexp.MustCompile(`^\s*[+-].*included:\s*/tmp/repo-drift-\d+/`),
+		regexp.MustCompile(`^\s*[+-].*\(item=/tmp/repo-drift-\d+/`),
+		regexp.MustCompile(`^\s*[+-].*"-t"`),
 	}
 
 	lines := strings.Split(output, "\n")
@@ -575,6 +602,18 @@ func (d *DriftDetector) areChangesIgnorable(output string) bool {
 					if strings.Contains(lineLower, pattern) {
 						d.logger.Debug().Str("line", line).Str("pattern", pattern).Msg("Ignoring change due to ignorable pattern")
 						isIgnorable = true
+						break
+					}
+				}
+			}
+
+			// Additional safety check: if line contains service-related keywords, don't ignore
+			if isIgnorable {
+				serviceKeywords := []string{"service", "systemctl", "start", "stop", "restart", "enable", "disable"}
+				for _, keyword := range serviceKeywords {
+					if strings.Contains(lineLower, keyword) {
+						d.logger.Debug().Str("line", line).Str("keyword", keyword).Msg("Not ignoring service-related change")
+						isIgnorable = false
 						break
 					}
 				}
